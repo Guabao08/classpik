@@ -41,4 +41,7 @@ export const feed: FeedEvent[] = [
   { code: 'PHYS 2211', section: 'K', school: 'GT', seats: 4, claimedMs: 341, ago: '2m ago' },
   { code: 'CS 2110', section: 'A', school: 'GT', seats: 1, claimedMs: 298, ago: '3m ago' },
   { code: 'STA 199', section: '01', school: 'DUKE', seats: 3, claimedMs: 405, ago: '4m ago' },
+  { code: 'MATH 1554', section: 'G3', school: 'GT', seats: 1, claimedMs: 271, ago: '4m ago' },
+  { code: 'ISYE 3770', section: 'C', school: 'GT', seats: 2, claimedMs: null, ago: '5m ago' },
+  { code: 'CS 2340', section: 'D', school: 'GT', seats: 1, claimedMs: 329, ago: '5m ago' },
 ]

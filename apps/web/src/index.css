@@ -30,7 +30,7 @@ body {
   overflow-x: hidden;
 }
 
-/* Numbers are the whole point of this product — give them their own voice. */
+/* Numbers are the whole point of this product, so give them their own voice. */
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;

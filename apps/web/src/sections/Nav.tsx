@@ -10,12 +10,20 @@ export default function Nav() {
           <a className="transition hover:text-bright" href="#watchlist">Watchlist</a>
           <a className="transition hover:text-bright" href="#schools">Schools</a>
         </div>
-        <a
-          href="#waitlist"
-          className="rounded-full bg-open px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110"
-        >
-          Get early access
-        </a>
+        <div className="flex items-center gap-3">
+          <a
+            href="#app"
+            className="text-sm text-muted transition hover:text-bright"
+          >
+            Open app
+          </a>
+          <a
+            href="#waitlist"
+            className="rounded-full bg-open px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110"
+          >
+            Get early access
+          </a>
+        </div>
       </nav>
     </header>
   )

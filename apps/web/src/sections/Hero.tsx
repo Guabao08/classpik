@@ -45,7 +45,7 @@ export default function Hero() {
         />
 
         <p className="mx-auto mt-6 max-w-xl text-[17px] leading-relaxed text-muted">
-          ClassPik watches your sections around the clock and claims a seat the moment one opens —
+          ClassPik watches your sections around the clock and claims a seat the moment one opens,
           or the instant your registration window does. No 7 AM alarm. No refresh war.
         </p>
 

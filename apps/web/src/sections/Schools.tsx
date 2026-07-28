@@ -1,3 +1,4 @@
+import Reveal from '../components/Reveal'
 import { SectionLabel } from '../components/ui'
 
 const schools = [
@@ -9,7 +10,7 @@ const schools = [
 export default function Schools() {
   return (
     <section id="schools" className="mx-auto max-w-6xl px-6 pb-24">
-      <div className="panel p-8 sm:p-12">
+      <Reveal className="panel p-8 sm:p-12">
         <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr] lg:gap-16">
           <div>
             <SectionLabel>Schools</SectionLabel>
@@ -18,7 +19,7 @@ export default function Schools() {
             </h2>
             <p className="mt-4 text-[15px] leading-relaxed text-muted">
               Nearly every university runs one of three student systems. We build the adapter once,
-              then each new campus is a config file — not a rewrite. Adding your school takes days,
+              then each new campus is a config file, not a rewrite. Adding your school takes days,
               not months.
             </p>
             <a
@@ -53,7 +54,7 @@ export default function Schools() {
             ))}
           </div>
         </div>
-      </div>
+      </Reveal>
     </section>
   )
 }

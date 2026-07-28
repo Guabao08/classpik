@@ -1,21 +1,22 @@
+import Reveal from '../components/Reveal'
 import { SchoolTag, SeatBar, SectionLabel, StatusPill } from '../components/ui'
 import { watches } from '../data/mock'
 
 export default function Watchlist() {
   return (
     <section id="watchlist" className="mx-auto max-w-6xl px-6 pb-24">
-      <div className="mb-10 max-w-2xl">
+      <Reveal className="mb-10 max-w-2xl">
         <SectionLabel>Your watchlist</SectionLabel>
         <h2 className="text-[clamp(1.9rem,4vw,2.75rem)] font-bold leading-tight tracking-[-0.02em]">
           Every section you need, on one screen.
         </h2>
         <p className="mt-4 text-[15px] leading-relaxed text-muted">
-          No animated backgrounds here on purpose — when you’re scanning seat counts under time
+          No animated backgrounds here on purpose. When you’re scanning seat counts under time
           pressure, the interface should get out of the way.
         </p>
-      </div>
+      </Reveal>
 
-      <div className="panel overflow-hidden">
+      <Reveal className="panel overflow-hidden" delay={0.08}>
         <div className="hidden grid-cols-[1.6fr_0.7fr_1fr_0.8fr_0.7fr] gap-4 border-b border-line px-6 py-3.5 text-[11px] font-semibold uppercase tracking-wider text-muted md:grid">
           <span>Course</span>
           <span>CRN</span>
@@ -65,7 +66,7 @@ export default function Watchlist() {
             </div>
           </div>
         ))}
-      </div>
+      </Reveal>
     </section>
   )
 }
