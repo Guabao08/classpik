@@ -1,0 +1,14 @@
+# Phase 0 captures contain live session cookies — never commit
+notes/
+*.curl
+*.har
+
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
