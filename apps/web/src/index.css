@@ -1,0 +1,62 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --color-ink: #0b0d10;
+  --color-ink-2: #101317;
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-muted: #8b929c;
+  --color-bright: #f2f4f7;
+
+  /* Semantic: seats. Green means go, and it means a seat is open. */
+  --color-open: #c8ff4d;
+  --color-open-dim: #8fbf28;
+  --color-full: #ff6b6b;
+  --color-wait: #ffb443;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-bright);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Numbers are the whole point of this product — give them their own voice. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+}
+
+@keyframes pulse-open {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 255, 77, 0.5); }
+  50%      { box-shadow: 0 0 0 5px rgba(200, 255, 77, 0); }
+}
+
+.dot-open {
+  animation: pulse-open 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
