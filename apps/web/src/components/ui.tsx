@@ -1,11 +1,10 @@
 import type { Status } from '../data/mock'
+import { MarkSeat } from './logos'
 
-export function Logo({ className = '' }: { className?: string }) {
+export function Logo({ className = '', size = 26 }: { className?: string; size?: number }) {
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
-      <div className="relative grid h-7 w-7 place-items-center rounded-lg bg-open">
-        <div className="h-2.5 w-2.5 rounded-sm bg-ink" />
-      </div>
+    <div className={`flex items-center gap-2.5 ${className}`}>
+      <MarkSeat size={size} className="shrink-0 text-bright" />
       <span className="text-[17px] font-bold tracking-tight">
         class<span className="text-open">pik</span>
       </span>
