@@ -1,9 +1,9 @@
-# ClassPik — Architecture
+# ClassPik: Architecture
 
 Autonomous course registration for college students. Two things:
 
 1. **Watch** a section and get pinged the moment a seat opens.
-2. **Enroll** automatically — at your registration window, or the instant a seat frees up.
+2. **Enroll** automatically, at your registration window, or the instant a seat frees up.
 
 ---
 
@@ -24,7 +24,7 @@ Keeping these apart means the broadly-deployable half carries zero password liab
 
 ---
 
-## System A — Monitor (cloud)
+## System A: Monitor (cloud)
 
 Unauthenticated crawler that tracks seat counts and notifies students.
 
@@ -33,25 +33,25 @@ Unauthenticated crawler that tracks seat counts and notifies students.
 - Node/TypeScript workers on Fly.io
 - BullMQ job queue on Upstash Redis
 - Notifications: Web Push (free, works as installed PWA on iOS) + email via Resend
-- SMS deferred to a paid tier — Twilio A2P 10DLC registration isn't worth the v1 friction
+- SMS deferred to a paid tier, Twilio A2P 10DLC registration isn't worth the v1 friction
 
 **The scalability decision: poll per section, not per watch.**
 
-Watches are deduped into a global poll table keyed by `(school, term, crn)`. Fifty students watching the same section produce *one* request. Crawl load therefore scales with **distinct watched sections**, not with users — the system gets cheaper per user as it grows.
+Watches are deduped into a global poll table keyed by `(school, term, crn)`. Fifty students watching the same section produce *one* request. Crawl load therefore scales with **distinct watched sections**, not with users. The system gets cheaper per user as it grows.
 
 10k distinct sections at a 5-minute floor is ~33 req/s spread across every supported school. Comfortable on a hobby budget.
 
-**Politeness is a hard requirement.** Adaptive intervals (15 min baseline, tightening near add/drop deadlines), per-school concurrency caps, exponential backoff on errors. The realistic failure mode is not legal — it's getting IP-blocked and silently going dark for every user at that school.
+**Politeness is a hard requirement.** Adaptive intervals (15 min baseline, tightening near add/drop deadlines), per-school concurrency caps, exponential backoff on errors. The realistic failure mode is not legal. It is getting IP-blocked and silently going dark for every user at that school.
 
 ---
 
-## System B — Agent (local)
+## System B: Agent (local)
 
 Desktop app that holds the session and performs enrollment.
 
 **Stack**
-- Electron + TypeScript — shares adapter types with the backend. Tauri gives smaller binaries but costs us a second language; not worth it for a two-person team.
-- Playwright driving the student's **installed Chrome** with a dedicated persistent profile — not a bundled Chromium. Smaller install, and the profile can inherit SSO/device-trust state the student already has. Falls back to downloading Chromium if Chrome is absent.
+- Electron + TypeScript, shares adapter types with the backend. Tauri gives smaller binaries but costs us a second language; not worth it for a two-person team.
+- Playwright driving the student's **installed Chrome** with a dedicated persistent profile, not a bundled Chromium. Smaller install, and the profile can inherit SSO/device-trust state the student already has. Falls back to downloading Chromium if Chrome is absent.
 - Credentials in the OS keychain (Keychain on macOS, DPAPI on Windows).
 - Scheduled hardware wake: `pmset schedule wake` (macOS), Task Scheduler wake timer (Windows). The computer wakes up early, not the student.
 
@@ -59,7 +59,7 @@ Desktop app that holds the session and performs enrollment.
 
 Browser for authentication, raw HTTP for the race:
 
-1. Playwright completes SSO + MFA in a persistent context. (SSO is a SAML/CAS/OIDC redirect chain with JS in the middle — reimplementing it in raw HTTP breaks constantly. Let a real browser do it.)
+1. Playwright completes SSO + MFA in a persistent context. (SSO is a SAML/CAS/OIDC redirect chain with JS in the middle. Reimplementing it in raw HTTP breaks constantly. Let a real browser do it.)
 2. Lift session cookies out of the browser context.
 3. At T-minus seconds: scrape fresh CSRF/state tokens, build the payload, open a keep-alive connection so TCP+TLS is already done.
 4. Fire as raw HTTP. Milliseconds, and multiple sections can go in parallel.
@@ -68,7 +68,7 @@ Browser for authentication, raw HTTP for the race:
 
 ---
 
-## MFA — three strategies, every vendor
+## MFA: three strategies, every vendor
 
 We never integrate with an MFA vendor. We drive a browser through whatever the school's IdP renders, which puts us one layer *below* Duo/Entra/Okta/Google. The abstraction is therefore behavioral, not per-vendor:
 
@@ -78,9 +78,9 @@ interface MfaStrategy {
 }
 ```
 
-- **`DeviceTrust`** — persistent profile, tick "remember this device," reuse the cookie. Primary strategy. Identical across every vendor.
-- **`PushWait`** — trigger auth, notify the student's phone, wait for the IdP page to advance. We watch for a DOM/navigation change; we never call anyone's API.
-- **`InteractiveHandoff`** — open the window, human finishes it, agent takes over the session. Universal fallback. Covers passkeys, security questions, in-house SSO, anything we haven't seen.
+- **`DeviceTrust`**: persistent profile, tick "remember this device," reuse the cookie. Primary strategy. Identical across every vendor.
+- **`PushWait`**: trigger auth, notify the student's phone, wait for the IdP page to advance. We watch for a DOM/navigation change; we never call anyone's API.
+- **`InteractiveHandoff`**: open the window, human finishes it, agent takes over the session. Universal fallback. Covers passkeys, security questions, in-house SSO, anything we haven't seen.
 
 Three strategies cover every MFA vendor that exists, including ones that don't exist yet.
 
@@ -94,14 +94,14 @@ Three strategies cover every MFA vendor that exists, including ones that don't e
 
 ## SIS adapters
 
-Three adapters cover the large majority of US four-year enrollment. Each school is then a **config file, not code** — that's how two people reach many campuses.
+Three adapters cover the large majority of US four-year enrollment. Each school is then a **config file, not code**. That is how two people reach many campuses.
 
 ```ts
 interface SisAdapter {
-  // public, unauthenticated — the cloud monitor uses ONLY this
+  // public and unauthenticated; the cloud monitor uses ONLY this
   searchSections(term: Term, filter: Filter): Promise<SectionSnapshot[]>
 
-  // authenticated — local agent only
+  // authenticated; local agent only
   authenticate(creds: Creds, mfa: MfaStrategy): Promise<Session>
   prepare(session: Session, targets: Section[]): Promise<PreparedEnroll>
   fire(prepared: PreparedEnroll): Promise<EnrollResult>
@@ -111,7 +111,7 @@ interface SisAdapter {
 | Adapter | Difficulty | Notes |
 |---|---|---|
 | **Banner 9** | Easiest | Self-service registration is a JSON API underneath. Clean HTTP after auth. **Georgia Tech (OSCAR)** is Banner. |
-| **PeopleSoft CS** | Medium | Stateful — `ICSID`/`ICStateNum` tokens increment. Keep the browser page as state source, fire HTTP with freshly-scraped tokens. Has an **enrollment shopping cart**: pre-load the night before, race is just "Finish Enrolling." Build the adapter around the cart. **Duke (DukeHub)** is PeopleSoft. |
+| **PeopleSoft CS** | Medium | Stateful: `ICSID`/`ICStateNum` tokens increment. Keep the browser page as state source, fire HTTP with freshly-scraped tokens. Has an **enrollment shopping cart**: pre-load the night before, race is just "Finish Enrolling." Build the adapter around the cart. **Duke (DukeHub)** is PeopleSoft. |
 | **Workday Student** | Hardest | Obfuscated, heavily session-bound. Plan to stay in-browser. Deprioritize. |
 
 SIS can be auto-detected from URL shape: `/StudentRegistrationSsb/` → Banner 9, `/psc/` or `/psp/` → PeopleSoft, `*.myworkday.com` → Workday.
@@ -141,20 +141,20 @@ Adding a school = a config PR.
 
 ## Build order
 
-**Phase 0 — Feasibility spike.** Prove a replayed enrollment request is accepted by OSCAR. Nothing else is worth building until this is answered. See `PHASE0.md`.
+**Phase 0, Feasibility spike.** Prove a replayed enrollment request is accepted by OSCAR. Nothing else is worth building until this is answered. See `PHASE0.md`.
 
-**Phase 1 — Monitor only.** Banner + PeopleSoft catalog search, watch a section, get pinged. No credentials anywhere. Shippable and useful on its own; earns users while the risky half is unproven.
+**Phase 1, Monitor only.** Banner + PeopleSoft catalog search, watch a section, get pinged. No credentials anywhere. Shippable and useful on its own; earns users while the risky half is unproven.
 
-**Phase 2 — Agent + enrollment.** One school (GT), registration-window sniping.
+**Phase 2, Agent + enrollment.** One school (GT), registration-window sniping.
 
-**Phase 3 — Auto-grab.** Monitor detects seat → pushes to agent → agent fires. Needs both halves. This is the thing people pay for.
+**Phase 3, Auto-grab.** Monitor detects seat → pushes to agent → agent fires. Needs both halves. This is the thing people pay for.
 
 ---
 
 ## Known risks
 
 1. **Phase 0 may fail on some schools.** Some portals bind requests to browser state tightly enough that we must stay in-browser. Workday almost certainly will. Every adapter needs a slow-but-working DOM automation fallback.
-2. **Public catalogs aren't universal.** Most schools expose seat counts without login; some don't. Those schools break the clean split and can only be monitored with credentials — or not at all. Check per school at onboarding.
+2. **Public catalogs aren't universal.** Most schools expose seat counts without login; some don't. Those schools break the clean split and can only be monitored with credentials, or not at all. Check per school at onboarding.
 3. **Registration windows are per-student time tickets.** You cannot enroll before your own assigned window, no matter how fast you are. "Sniping" means *firing the instant your own window opens*. Market it honestly.
 4. **Session lifetime.** Portals expire idle sessions (Banner ~30 min) and often hard-cap absolute session length. Long waitlist watches will need re-auth, which is why `DeviceTrust` is the primary MFA strategy rather than a nicety.
 

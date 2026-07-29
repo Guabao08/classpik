@@ -143,7 +143,7 @@ export default function SearchView({
                 </div>
 
                 <div className="num text-xs text-muted">
-                  {s.meetingDays ?? '—'} {s.meetingTime ?? ''}
+                  {s.meetingDays ? `${s.meetingDays} ${s.meetingTime ?? ''}`.trim() : 'TBA'}
                 </div>
 
                 <div>

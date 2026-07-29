@@ -162,7 +162,7 @@ running `npm start` must not poll a real registrar.
 
 | Adapter | Status | Notes |
 |---|---|---|
-| `banner9` | Built, fixture-tested | Public class search is a JSON API underneath. Endpoint shapes verified against the [nubanned](https://jennydaman.gitlab.io/nubanned/) docs. **Not yet run against a live install** — that is Phase 0. |
+| `banner9` | Built, fixture-tested | Public class search is a JSON API underneath. Endpoint shapes verified against the [nubanned](https://jennydaman.gitlab.io/nubanned/) docs. **Not yet run against a live install**; that is Phase 0. |
 | `peoplesoft` | Not built | Stateful `ICSID`/`ICStateNum` tokens; keep a browser page as the state source. |
 | `workday` | Not built | Obfuscated and heavily session-bound. Deprioritised. |
 
@@ -174,7 +174,7 @@ The value actually used is whatever the config file says.
 Banner will not let you simply GET search results. You must hold a session
 cookie and POST the term you intend to search, which authorises that session for
 that term. **Results for an unauthorised term come back empty with a 200, not an
-error** — a missing handshake looks exactly like "this subject has no classes".
+error.** A missing handshake looks exactly like "this subject has no classes".
 
 The adapter treats a zero-row first page as a broken session and raises, rather
 than accepting it. Silently accepting it would make the service report every
@@ -230,7 +230,7 @@ rewrite rather than an app rewrite.
 | `notifications` | Delivery queue, unique per (watch, event) |
 
 A section that disappears from a fetch is flagged `present = 0`, never deleted.
-The disappearance is ambiguous — cancelled section, or an upstream hiccup — and
+The disappearance is ambiguous, cancelled section, or an upstream hiccup, and
 nothing is lost if it comes back on the next poll.
 
 ---
