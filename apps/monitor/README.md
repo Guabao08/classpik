@@ -11,7 +11,7 @@ design decision, and it is enforced at the type level: there is nowhere in
 
 ```bash
 npm install
-npm test          # 604 tests
+npm test          # 625 tests
 npm run typecheck
 npm run serve -- --demo   # runs against a simulated SIS, no real registrar
 ```
@@ -84,6 +84,17 @@ A school no longer has to be onboarded by hand-enumerating its subject codes.
 `SubjectDiscovery` asks the adapter's `listSubjects` once per (school, term) on
 a daily timer and records what it finds in the `subjects` table.
 
+It asks about the **newest three terms per school, not every term stored**. The
+terms table holds whatever the SIS volunteered, and Banner answers `getTerms`
+with up to fifty including archived "View Only" ones. Discovering all of them is
+roughly a hundred and fifty back-to-back requests at one registrar, long enough
+that the tick budget aborted the run partway through and the tail of the list was
+never reached. Nobody registers for a term from four years ago.
+
+It also runs beside the poll tick rather than in front of it, and reschedules
+from the outcome: a run that did not finish, or that finished with a school
+unanswered, is retried in minutes rather than counted as done and left for a day.
+
 **Discovery does not create poll targets.** A large university publishes two
 hundred or more subject codes, and turning those into two hundred poll targets
 would multiply our request rate at that registrar by two orders of magnitude to
@@ -121,11 +132,23 @@ Four things hold that bound:
   everything else, rather than an HTTP handler firing at a registrar while a
   student holds the connection open.
 - **A seeded subject nobody watches is polled once and then goes quiet**,
-  because a target that has already been polled is only claimed while a live
-  watch points into it. Curiosity costs one request, not a subscription.
+  because a target that has *succeeded* at least once is only claimed while a
+  live watch points into it. Curiosity costs one request, not a subscription.
+
+That last rule is keyed on having succeeded, not on having been attempted, and
+the difference is the whole feature. A subject's first fetch is the one that
+creates its sections, and a watch can only name a section, so a single 503 on a
+bootstrap fetch used to remove that subject from the catalog permanently: no
+sections existed for a watch to point at, `active` stayed 1 because a transient
+error is not a permanent one, `/api/stats` counted it as healthy, and browsing it
+again answered "already". A target that has never once produced anything stays
+claimable, on the error backoff `next_poll_at` already carries. `active = 0` is
+still the permanent off switch for a genuine 4xx.
 
 `GET /api/subjects?school=&term=` returns the catalogue with a `seeded` flag per
-row, so a client can tell "no sections here yet" apart from "no sections".
+row, so a client can tell "no sections here yet" apart from "no sections". The
+web app uses both routes: Find classes lists the discovered catalogue and opening
+an unfetched subject posts the seed.
 
 ### Change detection
 
@@ -161,7 +184,7 @@ interval while CS, where nothing moved, sits at ~63s.
 
 ### Running more than one worker
 
-Several pollers may share one database, in one process or across machines. Work
+Several pollers may share one database, in one process or several on one host. Work
 is divided by **leasing a target before fetching it**, so the fleet still spends
 exactly one upstream request per subject per cycle however many workers are
 running. That is the property that matters: adding a worker must buy redundancy
@@ -174,13 +197,26 @@ the first has already stamped. They get disjoint sets. A `SELECT` of due targets
 followed by an `UPDATE` would not do this: both would read before either wrote,
 and both would fetch the same subject.
 
-Every lease carries an expiry, default two minutes. A worker killed between
-claiming a target and recording the result would otherwise hold it forever, and
-the students watching sections in it would simply stop being told anything, with
-nothing anywhere saying why. Anything past its expiry is claimable again. A
-target is claimed one at a time rather than in a batch, so the lease only has to
-outlast a single fetch, and two workers interleave through the same due list
-instead of one taking the whole batch.
+Every lease carries an expiry, default two minutes, and **the holder renews its
+own while the fetch is in flight**. Both halves are load-bearing:
+
+- Without the expiry, a worker killed between claiming a target and recording the
+  result holds it forever, and the students watching sections in it simply stop
+  being told anything with nothing anywhere saying why.
+- Without renewal, the expiry is a fiction. One `fetchSections` is the session
+  handshake plus two requests per page, each of which may retry, and each retry
+  honours `Retry-After` up to a minute. A fetch can legitimately run several
+  times two minutes, and the window where a second worker claims the same subject
+  opens precisely when the registrar is rate limiting us, which is the worst
+  possible moment to double our request rate. `PoliteClient` now also caps one
+  `request()` at a total budget rather than at a product of limits, so there is a
+  number to reason about.
+
+A worker that has lost its lease anyway cannot take it back: renewal is scoped to
+the current owner, and so is the lease-clearing half of recording a result, so a
+late worker reporting back never unlatches the worker that replaced it. A target
+is claimed one at a time rather than in a batch, so two workers interleave
+through the same due list instead of one taking the whole batch.
 
 ```bash
 CLASSPIK_DB=/data/classpik.db PORT=8787 npm start
@@ -261,7 +297,20 @@ come from the account:
 undergraduate classes, in their own term, at their own school. Widening is
 something the student does, by naming a school or ticking another level, and
 `GET /api/sections` echoes the `scope` it applied so a client can show it rather
-than leave a shorter list unexplained.
+than leave a shorter list unexplained. The web app renders that echo above the
+results and names the part of it that emptied a list.
+
+**Codes do not travel between schools, and moving school drops them.** Term and
+level codes are institution-defined: 202608 is Fall 2026 at one school and
+nothing at all at the next, and UGRD at a PeopleSoft school is UG at a Banner
+one. Carried across, they filter the new school's catalog on codes it has never
+published, which returns nothing and reads as a school we failed to load rather
+than as a filter. So both the per-request path and `POST /api/auth/preferences`
+drop them: patching only `school` clears the levels, and clears the term too
+where the new school's known terms prove it meaningless. A request that states
+levels itself is honoured, and clearing school to `null` keeps them, since an
+account with levels and no school asked for undergraduate classes wherever they
+are.
 
 ### Level is a list, and its values are not ours to invent
 
@@ -493,7 +542,7 @@ registrar.
 
 | Adapter | Status | Notes |
 |---|---|---|
-| `banner9` | Built, fixture-tested | Public class search is a JSON API underneath. Endpoint shapes verified against the [nubanned](https://jennydaman.gitlab.io/nubanned/) docs. **Not yet run against a live install**; that is Phase 0. |
+| `banner9` | Built, fixture-tested, **public search verified live** | Public class search is a JSON API underneath. Endpoint shapes verified against the [nubanned](https://jennydaman.gitlab.io/nubanned/) docs, and the full handshake this adapter performs was run against **Georgia Tech on 2026-07-29**, logged out: 1751 CS sections for Fall 2026 with every seat field present. `schools/gatech.yaml` is committed with every value read off those responses. Enrollment replay, Phase 0 Part A, is still unanswered. |
 | `peoplesoft` | Built for **HighPoint CX only**, fixture-tested | Covers PeopleSoft schools that licensed HighPoint Campus Experience, which is where the clean JSON class search comes from. Stock installs do not have it and will 404. Field shapes reconstructed from two open-source consumers at two schools, not from a captured response. **Never run against a live install.** |
 | `workday` | Not built | Obfuscated and heavily session-bound. Deprioritised. |
 
@@ -682,7 +731,7 @@ nothing is lost if it comes back on the next poll.
 npm test
 ```
 
-604 tests across seventeen files. The adapter is tested against recorded response
+625 tests across seventeen files. The adapter is tested against recorded response
 shapes rather than a live registrar: pointing load at a university to test our
 own code would be rude, and a suite that depends on their uptime is a suite that
 fails during their maintenance window.
@@ -713,12 +762,13 @@ fails during their maintenance window.
 
 Stated plainly so nobody is surprised:
 
-- **Neither the Banner nor the PeopleSoft adapter has run against a live
-  install.** Both are built to a documented contract and tested against recorded
-  shapes. Phase 0 verifies them. The PeopleSoft one is the weaker of the two:
-  its field names come from two open-source consumers of the API rather than
-  from a response anyone captured, and the page size of its class search is
-  unknown, so the per-subject request count is a guess until measured.
+- **The PeopleSoft adapter has never run against a live install.** Its field
+  names come from two open-source consumers of the API rather than from a
+  response anyone captured, and the page size of its class search is unknown, so
+  the per-subject request count is a guess until measured. The Banner adapter is
+  in better shape: its public search path was verified live at Georgia Tech on
+  2026-07-29 with a committed config, which is Phase 0 Part B. What neither has
+  is enrollment, which is Part A and needs an open registration window.
 - **Academic level has never been read off a live install.** Both adapters map
   it to a documented field, Banner's `levels` and PeopleSoft's `acad_career`,
   and neither has been seen in a real response. A missing field leaves sections

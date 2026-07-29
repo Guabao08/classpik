@@ -438,9 +438,13 @@ describe('API', () => {
       const body = await (await get(`/api/subjects?school=${SCHOOL_ID}&term=${TERM}`, null)).json() as any
       expect(body.count).toBe(2)
       expect(body.subjects.map((s: any) => s.code)).toEqual(['ANTH', 'MATH'])
-      // Nothing has been fetched yet, and the client is told so rather than
-      // being left to wonder why the subject has no sections.
-      expect(body.subjects.every((s: any) => s.seeded === false)).toBe(true)
+      // ANTH has never been fetched, and the client is told so rather than
+      // being left to wonder why the subject has no sections. MATH has a poll
+      // target from the school's own config, which is the other route to one:
+      // reporting it as unfetched would offer a seed for work already queued.
+      const byCode = new Map(body.subjects.map((s: any) => [s.code, s.seeded]))
+      expect(byCode.get('ANTH')).toBe(false)
+      expect(byCode.get('MATH')).toBe(true)
     })
 
     it('needs a school, and 404s for one it does not have', async () => {

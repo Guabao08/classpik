@@ -441,6 +441,87 @@ describe('Runner', () => {
     expect(calls).toBe(1)
   })
 
+  it('retries a discovery run that did not finish, rather than waiting a day', async () => {
+    // The stamp used to be written before the run, so a run the tick budget cut
+    // off counted as a completed one. Tomorrow it started at the same school
+    // and stopped in the same place, so whatever was past the cutoff was never
+    // discovered at all and its subjects could never be browsed.
+    //
+    // The clock here does not move, so discoveryRetryMs is 0 to mean "the next
+    // tick". The interval is a day, so nothing but the retry path can produce a
+    // second call.
+    env.repo.replaceTerms(SCHOOL_ID, [{ code: TERM, description: 'Fall 2026' }])
+    let calls = 0
+    const flaky: SisAdapter = {
+      id: 'banner9',
+      listTerms: async () => [],
+      listSubjects: async () => {
+        calls++
+        if (calls === 1) throw new Error('registrar never answered')
+        return [{ code: 'MATH', description: 'Mathematics' }]
+      },
+      fetchSections: async () => [],
+    }
+    const { poller, dispatcher } = build(env, flaky)
+    const runner = new Runner(poller, dispatcher, {
+      tickIntervalMs: 5,
+      now: () => env.clock.now,
+      discovery: new SubjectDiscovery(
+        env.repo,
+        new Map<SisId, SisAdapter>([['banner9', flaky]]),
+        { now: () => env.clock.now }
+      ),
+      discoveryIntervalMs: 24 * 60 * 60_000,
+      discoveryRetryMs: 0,
+      log: () => {},
+    })
+    runner.start()
+    await new Promise((r) => setTimeout(r, 80))
+    await runner.stop()
+
+    expect(calls).toBeGreaterThan(1)
+    expect(env.repo.listSubjects(SCHOOL_ID, TERM).map((s) => s.code)).toEqual(['MATH'])
+  })
+
+  it('does not hold the poll tick behind a slow catalogue request', async () => {
+    // Discovery talks to a registrar over several requests. Sitting in front of
+    // the poll meant every watched section waited a full tick on the day it
+    // ran, which is the one thing this service is for.
+    env.repo.replaceTerms(SCHOOL_ID, [{ code: TERM, description: 'Fall 2026' }])
+    let releaseCatalog: () => void = () => {}
+    const held = new Promise<void>((r) => { releaseCatalog = r })
+    const adapter = new FixtureAdapter(SECTIONS)
+    const slowCatalog: SisAdapter = {
+      id: 'banner9',
+      listTerms: async () => [],
+      listSubjects: async () => {
+        await held
+        return []
+      },
+      fetchSections: (...args) => adapter.fetchSections(...args),
+    }
+    env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+
+    const { poller, dispatcher } = build(env, slowCatalog)
+    const runner = new Runner(poller, dispatcher, {
+      tickIntervalMs: 5,
+      now: () => env.clock.now,
+      discovery: new SubjectDiscovery(
+        env.repo,
+        new Map<SisId, SisAdapter>([['banner9', slowCatalog]]),
+        { now: () => env.clock.now }
+      ),
+      log: () => {},
+    })
+    runner.start()
+    await new Promise((r) => setTimeout(r, 60))
+
+    // The watched subject was polled while the catalogue request was still open.
+    expect(adapter.pollCount('MATH')).toBeGreaterThan(0)
+    releaseCatalog()
+    await runner.stop()
+  })
+
   it('prunes expired sessions as it goes, since nothing else ever did', async () => {
     // One row per login, kept for the life of the database otherwise.
     const user = env.repo.createUser({

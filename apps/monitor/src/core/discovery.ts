@@ -43,9 +43,25 @@ import type { Repo } from './repo.js'
  *    polled. Curiosity costs one request, not a subscription.
  */
 
+/**
+ * How many terms one run will ask about per school.
+ *
+ * `cli.ts` fills the terms table from `adapter.listTerms`, and Banner answers
+ * `getTerms?offset=1&max=50`, so a school can easily hold fifty terms including
+ * archived "View Only" ones. Discovery costs three requests per term at a
+ * Banner school (the session handshake is cached per (school, term)), so an
+ * unbounded run is roughly a hundred and fifty back-to-back requests at one
+ * registrar, which is both impolite and longer than the tick budget that wraps
+ * it. Nobody registers for a term from four years ago. `listTerms` already
+ * orders by code descending, so the newest few are the ones anybody can act on.
+ */
+export const DEFAULT_MAX_TERMS = 3
+
 export interface DiscoveryOptions {
   now?: () => number
   log?: (msg: string, meta?: Record<string, unknown>) => void
+  /** Newest terms per school to ask about. See DEFAULT_MAX_TERMS. */
+  maxTerms?: number
 }
 
 export interface DiscoveryResult {
@@ -59,6 +75,7 @@ export interface DiscoveryResult {
 export class SubjectDiscovery {
   private readonly now: () => number
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void
+  private readonly maxTerms: number
 
   constructor(
     private readonly repo: Repo,
@@ -67,16 +84,23 @@ export class SubjectDiscovery {
   ) {
     this.now = opts.now ?? Date.now
     this.log = opts.log ?? (() => {})
+    this.maxTerms = Math.max(1, opts.maxTerms ?? DEFAULT_MAX_TERMS)
   }
 
   /**
-   * Refresh the catalogue for every enabled school and known term.
+   * Refresh the catalogue for every enabled school, over its newest few terms.
    *
    * The cost is one request per (school, term), which is why this can run on a
    * slow timer and be forgotten about. A school whose terms are not known yet
    * is skipped rather than guessed at: Banner discovers terms upstream and
    * PeopleSoft reads them from config, and inventing one would mean asking a
    * registrar about a term that does not exist.
+   *
+   * Bounded by `maxTerms`, because the terms table is however many the SIS
+   * volunteered and not however many anybody can register for. Running the
+   * whole list turned a cheap daily job into a minute of back-to-back requests
+   * at one registrar, long enough that the tick budget aborted it partway
+   * through and the tail of the list was never reached at all.
    */
   async run(signal?: AbortSignal): Promise<DiscoveryResult> {
     const out: DiscoveryResult = { queried: 0, subjects: 0, added: 0, errors: 0 }
@@ -86,7 +110,8 @@ export class SubjectDiscovery {
       const adapter = this.adapters.get(school.sis)
       if (!adapter) continue
 
-      for (const term of this.repo.listTerms(school.id)) {
+      // listTerms orders code DESC, so this is the newest few.
+      for (const term of this.repo.listTerms(school.id).slice(0, this.maxTerms)) {
         if (signal?.aborted) return out
         out.queried++
         try {

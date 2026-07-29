@@ -66,6 +66,10 @@ export default function AppShell({
   onSignOut: () => void
 }) {
   const [view, setView] = useState<View>('search')
+  // Below the breakpoint the sidebar is a drawer rather than a fixed column.
+  // 236px of a 390px phone left the section table 154px to render five columns
+  // in, on the one screen a seat alert actually leads to.
+  const [menuOpen, setMenuOpen] = useState(false)
   const [watches, setWatches] = useState<Watch[]>([])
   const [events, setEvents] = useState<EventItem[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
@@ -155,11 +159,53 @@ export default function AppShell({
 
   return (
     <div className="flex min-h-screen bg-ink">
-      <aside className="fixed inset-y-0 left-0 flex w-[236px] flex-col overflow-y-auto border-r border-line bg-ink-2/50 px-4 py-5">
-        <div className="px-2 pb-6">
-          <a href="/" aria-label="ClassPik home">
+      {/* Only on narrow screens, where the sidebar is closed by default and
+          there would otherwise be no way to reach the other two views. */}
+      <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-ink/90 px-4 backdrop-blur-xl md:hidden">
+        <a href="/app" aria-label="ClassPik home">
+          <Logo />
+        </a>
+        <button
+          onClick={() => setMenuOpen(true)}
+          aria-label="Open the menu"
+          aria-expanded={menuOpen}
+          className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-muted transition hover:text-bright"
+        >
+          Menu
+        </button>
+      </header>
+
+      {menuOpen && (
+        <button
+          aria-label="Close the menu"
+          onClick={() => setMenuOpen(false)}
+          className="fixed inset-0 z-40 bg-ink/70 backdrop-blur-sm md:hidden"
+        />
+      )}
+
+      {/* Shown or not, rather than slid in and out. A translate drawer animates
+          between -100% and 0px, and interpolating a percentage against a length
+          on the `translate` property leaves it stuck at the start value in at
+          least one engine, which is a sidebar that never appears. */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-[236px] flex-col overflow-y-auto border-r border-line bg-ink-2 px-4 py-5 md:z-auto md:flex md:bg-ink-2/50 ${
+          menuOpen ? 'flex' : 'hidden'
+        }`}
+      >
+        <div className="flex items-center justify-between px-2 pb-6">
+          {/* Inside the product the logo goes to the product. It used to point
+              at "/", so the most obvious click on the screen ejected a signed-in
+              student into a marketing funnel aimed at people without accounts. */}
+          <a href="/app" aria-label="ClassPik home">
             <Logo />
           </a>
+          <button
+            onClick={() => setMenuOpen(false)}
+            aria-label="Close the menu"
+            className="text-xs text-muted transition hover:text-bright md:hidden"
+          >
+            Close
+          </button>
         </div>
 
         <nav className="flex flex-col gap-1">
@@ -170,7 +216,10 @@ export default function AppShell({
             return (
               <button
                 key={n.id}
-                onClick={() => setView(n.id)}
+                onClick={() => {
+                  setView(n.id)
+                  setMenuOpen(false)
+                }}
                 className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
                   active
                     ? 'bg-open/10 font-semibold text-open'
@@ -226,9 +275,9 @@ export default function AppShell({
         </div>
       </aside>
 
-      <main className="ml-[236px] flex-1">
+      <main className="min-w-0 flex-1 pt-14 md:ml-[236px] md:pt-0">
         {offline && (
-          <div className="border-b border-full/25 bg-full/8 px-9 py-3.5">
+          <div className="border-b border-full/25 bg-full/8 px-5 py-3.5 md:px-9">
             <p className="text-sm font-semibold">{offline}</p>
             <p className="mt-1 text-xs leading-relaxed text-muted">
               Start it with{' '}
@@ -241,11 +290,17 @@ export default function AppShell({
         )}
 
         {loading ? (
-          <div className="px-9 py-16 text-sm text-muted">Loading…</div>
+          <div className="px-5 py-16 text-sm text-muted md:px-9">Loading…</div>
         ) : (
           <>
             {view === 'search' && (
-              <SearchView watched={watchedIds} onToggle={toggleWatch} user={user} onUser={onUser} />
+              <SearchView
+                watched={watchedIds}
+                onToggle={toggleWatch}
+                user={user}
+                onUser={onUser}
+                schools={schools}
+              />
             )}
             {view === 'watchlist' && (
               <WatchlistView

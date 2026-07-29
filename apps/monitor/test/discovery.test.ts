@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SubjectDiscovery } from '../src/core/discovery.js'
+import { DEFAULT_MAX_TERMS, SubjectDiscovery } from '../src/core/discovery.js'
 import { Poller } from '../src/core/poller.js'
 import { FixtureAdapter, type FixtureSection } from '../src/adapters/fixture.js'
 import { SisError, type SisAdapter, type SisId, type Subject } from '../src/adapters/types.js'
@@ -146,6 +146,42 @@ describe('SubjectDiscovery', () => {
     expect(lines).toContain('subject discovery failed')
   })
 
+  it('asks about the newest few terms rather than every term ever stored', async () => {
+    // Banner answers getTerms with up to fifty, including archived "View Only"
+    // ones, and each costs a session handshake plus the subject call. Running
+    // the whole list was roughly a hundred and fifty back-to-back requests at
+    // one registrar, which the tick budget then aborted partway through.
+    env.repo.replaceTerms(
+      SCHOOL_ID,
+      Array.from({ length: 50 }, (_, i) => ({
+        code: String(202608 - i),
+        description: `Term ${i}`,
+      }))
+    )
+    const adapter = new CatalogAdapter(BIG_CATALOG)
+    const result = await build(adapter).run()
+
+    expect(result.queried).toBe(DEFAULT_MAX_TERMS)
+    expect(adapter.listSubjectsCalls).toBe(DEFAULT_MAX_TERMS)
+    // And they are the newest, which are the only ones anybody can register for.
+    expect(env.repo.listSubjects(SCHOOL_ID, '202608')).toHaveLength(180)
+    expect(env.repo.listSubjects(SCHOOL_ID, '202559')).toEqual([])
+  })
+
+  it('takes an explicit term bound', async () => {
+    env.repo.replaceTerms(SCHOOL_ID, [
+      { code: '202608', description: 'Fall 2026' },
+      { code: '202602', description: 'Spring 2026' },
+    ])
+    const adapter = new CatalogAdapter(BIG_CATALOG)
+    const discovery = new SubjectDiscovery(
+      env.repo,
+      new Map<SisId, SisAdapter>([['banner9', adapter]]),
+      { now: () => env.clock.now, maxTerms: 1 }
+    )
+    expect((await discovery.run()).queried).toBe(1)
+  })
+
   it('stops partway through when it is aborted', async () => {
     const controller = new AbortController()
     controller.abort()
@@ -160,6 +196,21 @@ describe('SubjectDiscovery', () => {
         { code: 'MATH', description: 'Mathematics' },
         { code: 'ANTH', description: 'Anthropology' },
       ])).run()
+    })
+
+    it('reports a subject as fetched whichever route gave it a poll target', () => {
+      // A school onboarded from its config subject list never sets seeded_at,
+      // and a client reading that column alone was told every subject there was
+      // unfetched, which is the opposite of true and offers a seed for a target
+      // that already exists.
+      env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const byConfig = env.repo.getSubject(SCHOOL_ID, TERM, 'MATH')!
+      expect(byConfig.seeded_at).toBeNull()
+      expect(byConfig.has_target).toBe(1)
+
+      expect(env.repo.getSubject(SCHOOL_ID, TERM, 'ANTH')!.has_target).toBe(0)
+      build(new CatalogAdapter([])).seed(SCHOOL_ID, TERM, 'ANTH')
+      expect(env.repo.getSubject(SCHOOL_ID, TERM, 'ANTH')!.has_target).toBe(1)
     })
 
     it('turns a browsed subject into exactly one poll target', () => {
@@ -236,6 +287,50 @@ describe('SubjectDiscovery', () => {
       env.clock.now += 24 * 60 * 60_000
       expect((await poller.tick()).polled).toBe(0)
       expect(adapter.pollCount('ANTH')).toBe(1)
+    })
+
+    it('survives a registrar that 503s the one bootstrap fetch', async () => {
+      // The primary failure mode of the whole feature, and the most ordinary
+      // thing a registrar can do. A single transient error on a subject's
+      // first-ever poll used to remove that subject from the catalog forever:
+      // the fetch created no sections, so no watch could ever point at the
+      // target, so nothing claimed it again. `active` stayed 1, stats counted
+      // it as healthy, and re-browsing the subject answered 'already'.
+      let failNext = true
+      const adapter = new FixtureAdapter(SECTIONS)
+      const flaky: SisAdapter = {
+        id: 'banner9',
+        listTerms: () => adapter.listTerms(),
+        listSubjects: () => adapter.listSubjects(),
+        fetchSections: async (...args) => {
+          if (failNext) {
+            failNext = false
+            throw new SisError('upstream 503', null, true)
+          }
+          return adapter.fetchSections(...args)
+        },
+      }
+      const poller = new Poller(env.repo, new Map<SisId, SisAdapter>([['banner9', flaky]]), null, {
+        now: () => env.clock.now,
+        random: () => 0.5,
+      })
+
+      expect(build(new CatalogAdapter([])).seed(SCHOOL_ID, TERM, 'ANTH')).toBe('queued')
+      const first = await poller.tick()
+      expect(first.outcomes[0]!.ok).toBe(false)
+      expect(env.repo.searchSections({ subject: 'ANTH' })).toEqual([])
+
+      // The backoff is honoured rather than hammered, and then it is retried.
+      const id = `${SCHOOL_ID}:${TERM}:ANTH`
+      expect(env.repo.getTarget(id)!.active).toBe(1)
+      env.clock.now = first.outcomes[0]!.nextPollAt
+
+      expect((await poller.tick()).polled).toBe(1)
+      expect(env.repo.searchSections({ subject: 'ANTH' }).map((s) => s.code)).toEqual(['ANTH 101'])
+
+      // And having produced something, it goes quiet again with nobody watching.
+      env.clock.now += 24 * 60 * 60_000
+      expect((await poller.tick()).polled).toBe(0)
     })
 
     it('keeps polling the subject once somebody actually watches it', async () => {

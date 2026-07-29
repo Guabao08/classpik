@@ -13,7 +13,19 @@ import { AuthCard, authField } from './AuthCard'
  * The monitor is the only validator: it owns the password rules, so repeating
  * them here would mean two rules that drift apart.
  */
-export default function SignInView({ onSignedIn }: { onSignedIn: (user: User) => void }) {
+export default function SignInView({
+  onSignedIn,
+  offline,
+}: {
+  onSignedIn: (user: User) => void
+  /**
+   * Set when the stored session could not be checked because the monitor was
+   * unreachable. Worth saying up front: submitting this form will fail for the
+   * same reason, and a form that fails with no explanation reads as a rejected
+   * password.
+   */
+  offline?: string | null
+}) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -41,6 +53,12 @@ export default function SignInView({ onSignedIn }: { onSignedIn: (user: User) =>
       <p className="mt-1.5 text-sm leading-relaxed text-muted">
         This is a ClassPik account, not your school login. We never ask for that.
       </p>
+
+      {offline && !error && (
+        <p className="mt-4 rounded-xl border border-wait/25 bg-wait/8 px-3.5 py-2.5 text-xs leading-relaxed text-muted">
+          {offline}. Signing in will not work until it is running.
+        </p>
+      )}
 
       <form onSubmit={submit} className="mt-5 space-y-3">
         <label className="block">

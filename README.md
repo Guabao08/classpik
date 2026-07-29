@@ -9,11 +9,11 @@ Autonomous course registration for college students.
 
 | Path | What it is | Status |
 |---|---|---|
-| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 505 tests** |
+| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 625 tests** |
 | [`apps/web`](apps/web) | Landing page and the watcher UI, wired to the monitor API. | Built |
 | *(not started)* | The local agent that performs enrollment. | Blocked on Phase 0 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Every design decision and why. | |
-| [`PHASE0.md`](PHASE0.md) | The feasibility spike that unblocks enrollment. | Pending |
+| [`PHASE0.md`](PHASE0.md) | The feasibility spike that unblocks enrollment. | Part B answered, Part A pending |
 
 ## Run it
 
@@ -29,16 +29,20 @@ Then the web app:
 cd apps/web && npm install && npm run dev
 ```
 
-Open the app at `/#app`. It opens on a sign-in wall: watching a section needs a
-ClassPik account, which is ours and never a school login. Create one with any
-email address and a password of at least 10 characters. Nothing is emailed to
-it, since email delivery is off unless the monitor is configured with a
-provider.
+Open `http://localhost:5173/` and click **Get early access**, or go straight to
+`/signup`. Watching a section needs a ClassPik account, which is ours and never a
+school login. Signup is two steps: an email address and a password of at least 10
+characters, then the school, term and level you are shopping in. Nothing is
+emailed to you, since email delivery is off unless the monitor is configured with
+a provider.
 
-Then search for `MATH 221`, watch section B (which starts full), and within a
-minute the simulated registrar frees a seat and the alert appears under Alerts.
-Demo mode runs against a simulated student system, so nothing touches a real
-registrar.
+Signing up drops you at `/app`. Search for `MATH 221`, watch section B (which
+starts full), and within a minute the simulated registrar frees a seat and the
+alert appears under Alerts. Demo mode runs against a simulated student system, so
+nothing touches a real registrar.
+
+`/app` is the product and it needs a session: visiting it signed out redirects to
+`/login?next=/app`.
 
 ## The one decision that shapes everything
 
@@ -60,10 +64,16 @@ strategy, the SIS adapter design, and the known risks.
 
 ## Where things stand
 
-The watcher is real and tested, though neither SIS adapter has been run against
-a live install yet: both are built to a documented contract and tested against
-recorded response shapes. The enrollment half is not started, and it is
-gated on one unanswered question: **will a course registration system accept an
-enrollment request replayed by a script?** [PHASE0.md](PHASE0.md) is the
-experiment that answers it. Until it does, auto-claim is a stored preference
-rather than a working feature, and the UI says so.
+The watcher is real and tested. The Banner public search path has been **run
+against a live install**: Georgia Tech, on 2026-07-29, logged out, returning 1751
+CS sections with real seat counts, and `apps/monitor/schools/gatech.yaml` is
+committed with every value read off those responses (`enabled: false`, because
+turning it on starts continuous traffic at a real university). The PeopleSoft
+adapter has never met a live install, and neither has enrollment.
+
+The enrollment half is not started, and it is gated on one unanswered question:
+**will a course registration system accept an enrollment request replayed by a
+script?** That is Part A of [PHASE0.md](PHASE0.md), it needs an open registration
+window, and it is the only thing there still outstanding. Until it is answered,
+auto-claim is a stored preference rather than a working feature, and the UI says
+so.

@@ -74,6 +74,15 @@ export interface SubjectRow {
   discovered_at: number
   /** Null until a browse granted this subject its one bootstrap fetch. */
   seeded_at: number | null
+  /**
+   * 1 when a poll target already exists for this subject, however it got there.
+   *
+   * Not the same question as `seeded_at`, which records only that a browse
+   * bought the fetch. A school onboarded from its config list has targets and no
+   * `seeded_at` at all, so reading that column alone told a client every subject
+   * at such a school was unfetched, which is the opposite of true.
+   */
+  has_target: number
 }
 
 export interface WatchRow {
@@ -291,21 +300,33 @@ export class Repo {
     return { recorded: subjects.length, added: this.countSubjects(schoolId, term) - before }
   }
 
+  /**
+   * Every subject row carries whether a poll target exists for it, computed in
+   * the same statement rather than left to the caller to look up per row.
+   */
+  private static readonly SUBJECT_SELECT = `
+    SELECT s.*,
+           EXISTS (
+             SELECT 1 FROM poll_targets t
+             WHERE t.school_id = s.school_id AND t.term = s.term AND t.subject = s.code
+           ) AS has_target
+    FROM subjects s`
+
   listSubjects(schoolId: string, term?: string): SubjectRow[] {
     if (term === undefined) {
       return this.db
-        .prepare('SELECT * FROM subjects WHERE school_id = ? ORDER BY term DESC, code')
+        .prepare(`${Repo.SUBJECT_SELECT} WHERE s.school_id = ? ORDER BY s.term DESC, s.code`)
         .all(schoolId) as unknown as SubjectRow[]
     }
     return this.db
-      .prepare('SELECT * FROM subjects WHERE school_id = ? AND term = ? ORDER BY code')
+      .prepare(`${Repo.SUBJECT_SELECT} WHERE s.school_id = ? AND s.term = ? ORDER BY s.code`)
       .all(schoolId, term) as unknown as SubjectRow[]
   }
 
   getSubject(schoolId: string, term: string, code: string): SubjectRow | null {
     return (
       (this.db
-        .prepare('SELECT * FROM subjects WHERE school_id = ? AND term = ? AND code = ?')
+        .prepare(`${Repo.SUBJECT_SELECT} WHERE s.school_id = ? AND s.term = ? AND s.code = ?`)
         .get(schoolId, term, code.toUpperCase()) as unknown as SubjectRow) ?? null
     )
   }
@@ -395,7 +416,9 @@ export class Repo {
    * is the bootstrap path that breaks that chicken-and-egg.
    *
    * Read-only, like `dueTargets`. `claimTargets` is what the loop takes work
-   * with.
+   * with, and it is slightly wider than this: a target whose only polls were
+   * errors still has no sections, so it stays claimable there too. See
+   * NEVER_PRODUCED.
    */
   unseededTargets(limit = 25, at = this.now()): TargetRow[] {
     return this.db
@@ -406,6 +429,31 @@ export class Repo {
       )
       .all(at, limit) as unknown as TargetRow[]
   }
+
+  /**
+   * "This target has been polled and has never once produced anything."
+   *
+   * `consecutive_errors` is zeroed by every success and incremented by every
+   * error, while `poll_count` counts both, so the two are equal exactly when
+   * every poll this target has ever had was an error. One success anywhere in
+   * its history moves them apart forever.
+   *
+   * That distinction is load-bearing, and it used to be missing. A target's
+   * first-ever fetch is the one that creates its sections, a watch can only
+   * name a section, and the claim predicate lets a polled target through only
+   * for a live watch. So a single 503 on a bootstrap fetch used to remove that
+   * subject from the catalog permanently: the fetch stamped `last_polled_at`,
+   * no sections existed for a watch to point at, `active` stayed 1 because a
+   * transient error is not a permanent one, and nothing anywhere reported it as
+   * dead. Re-browsing the subject did not help either, since `seed` sees the
+   * target row and answers 'already'.
+   *
+   * Retrying stays polite because `next_poll_at` already carries the error
+   * backoff, and `active = 0` is still the permanent off switch for a genuine
+   * 4xx. A target that succeeded and returned nothing is NOT covered here: it
+   * answered, so curiosity has been paid for, and it goes quiet.
+   */
+  private static readonly NEVER_PRODUCED = 't.poll_count <= t.consecutive_errors'
 
   /**
    * Take exclusive ownership of up to `limit` targets that are ready to poll.
@@ -426,10 +474,12 @@ export class Repo {
    * told anything, silently, which is this service failing at the one thing it
    * does. Anything past `lease_expires_at` is fair game again.
    *
-   * The predicate is the union of the two older queries, unchanged in meaning:
+   * The predicate is the union of the two older queries plus the retry rule:
    * a target nobody has ever polled is claimable on its own (no sections exist
-   * yet, so no watch can point at it), and a target that has been polled is
-   * claimable only while somebody is actually watching something in it.
+   * yet, so no watch can point at it), a target whose every poll so far was an
+   * error is still claimable for the same reason, and a target that has
+   * actually produced sections is claimable only while somebody is watching
+   * something in it.
    */
   claimTargets(workerId: string, limit: number, at = this.now(), leaseMs = 120_000): TargetRow[] {
     if (limit <= 0) return []
@@ -443,6 +493,7 @@ export class Repo {
              AND (t.lease_owner IS NULL OR t.lease_expires_at IS NULL OR t.lease_expires_at <= ?)
              AND (
                t.last_polled_at IS NULL
+               OR ${Repo.NEVER_PRODUCED}
                OR EXISTS (
                  SELECT 1 FROM sections s
                  JOIN watches w ON w.section_id = s.id AND w.active = 1
@@ -455,6 +506,30 @@ export class Repo {
          RETURNING *`
       )
       .all(workerId, at + leaseMs, at, at, limit) as unknown as TargetRow[]
+  }
+
+  /**
+   * Push this worker's own lease further out, without taking one it does not
+   * hold.
+   *
+   * A lease has to outlast the fetch it covers, and a fetch has no fixed
+   * length: one `fetchSections` is several HTTP requests, each of which may
+   * retry, and a registrar answering 429 with `Retry-After: 60` stretches every
+   * one of them. A fixed expiry long enough for that worst case would also be
+   * the delay a genuinely dead worker costs every student watching that
+   * subject, so the expiry stays short and the live worker keeps saying it is
+   * still here.
+   *
+   * `lease_owner = ?` is the whole point. A worker whose lease already lapsed
+   * and was taken by somebody else must not be able to renew it back, or two
+   * workers end up fetching the same subject, which is the doubled request rate
+   * at a registrar this design exists to prevent.
+   */
+  renewLease(id: string, workerId: string, expiresAt: number): boolean {
+    const info = this.db
+      .prepare('UPDATE poll_targets SET lease_expires_at = ? WHERE id = ? AND lease_owner = ?')
+      .run(expiresAt, id, workerId)
+    return Number(info.changes) > 0
   }
 
   /**
@@ -496,7 +571,32 @@ export class Repo {
     return row.n
   }
 
-  recordPollSuccess(id: string, nextPollAt: number, intervalMs: number, changed: boolean): void {
+  /**
+   * SQL for "drop the lease, but only if it is still ours".
+   *
+   * A worker whose lease lapsed mid-fetch comes back and records its result
+   * against a row another worker has since claimed and is fetching right now.
+   * Clearing the lease unconditionally, which is what both record paths used to
+   * do, unlatches that live owner and lets a third worker take the same target:
+   * three requests at one registrar for one subject, from a fleet whose entire
+   * claim is that this cannot happen. `releaseTargets` always got this right.
+   *
+   * A null `workerId` means "clear it whoever holds it", which is what a
+   * migration script or a test that is not a worker wants.
+   */
+  private static readonly RELEASE_IF_OURS = `
+           lease_owner = CASE WHEN ? IS NULL OR lease_owner IS NULL OR lease_owner = ?
+                              THEN NULL ELSE lease_owner END,
+           lease_expires_at = CASE WHEN ? IS NULL OR lease_owner IS NULL OR lease_owner = ?
+                                   THEN NULL ELSE lease_expires_at END`
+
+  recordPollSuccess(
+    id: string,
+    nextPollAt: number,
+    intervalMs: number,
+    changed: boolean,
+    workerId: string | null = null
+  ): void {
     const now = this.now()
     this.db
       .prepare(
@@ -510,17 +610,23 @@ export class Repo {
            last_changed_at = CASE WHEN ? THEN ? ELSE last_changed_at END,
            consecutive_errors = 0,
            last_error = NULL,
-           -- The lease is dropped whoever holds it. The poll is over and
-           -- next_poll_at has just moved into the future, so there is nothing
-           -- here for another worker to pick up either way.
-           lease_owner = NULL,
-           lease_expires_at = NULL
+           ${Repo.RELEASE_IF_OURS}
          WHERE id = ?`
       )
-      .run(now, now, nextPollAt, intervalMs, changed ? 1 : 0, changed ? 1 : 0, now, id)
+      .run(
+        now, now, nextPollAt, intervalMs, changed ? 1 : 0, changed ? 1 : 0, now,
+        workerId, workerId, workerId, workerId,
+        id
+      )
   }
 
-  recordPollError(id: string, nextPollAt: number, message: string, permanent = false): void {
+  recordPollError(
+    id: string,
+    nextPollAt: number,
+    message: string,
+    permanent = false,
+    workerId: string | null = null
+  ): void {
     const now = this.now()
     this.db
       .prepare(
@@ -532,11 +638,14 @@ export class Repo {
            consecutive_errors = consecutive_errors + 1,
            last_error = ?,
            active = ?,
-           lease_owner = NULL,
-           lease_expires_at = NULL
+           ${Repo.RELEASE_IF_OURS}
          WHERE id = ?`
       )
-      .run(now, now, nextPollAt, message.slice(0, 500), permanent ? 0 : 1, id)
+      .run(
+        now, now, nextPollAt, message.slice(0, 500), permanent ? 0 : 1,
+        workerId, workerId, workerId, workerId,
+        id
+      )
   }
 
   // --------------------------------------------------------------- sections

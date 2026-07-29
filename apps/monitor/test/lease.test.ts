@@ -82,6 +82,52 @@ class RecordingAdapter implements SisAdapter {
   }
 }
 
+/**
+ * Suspends inside `fetchSections` until it is told to finish, which is what a
+ * registrar holding us on a Retry-After looks like from in here.
+ */
+class SuspendingAdapter implements SisAdapter {
+  readonly id = 'banner9' as const
+  subject = ''
+
+  private enter!: () => void
+  readonly started: Promise<void> = new Promise((r) => { this.enter = r })
+  private release!: () => void
+  private readonly gate: Promise<void> = new Promise((r) => { this.release = r })
+
+  constructor(private readonly fetches: string[]) {}
+
+  /** The target id this adapter is currently holding open. */
+  get claimed(): string {
+    return `${SCHOOL_ID}:${TERM}:${this.subject}`
+  }
+
+  finish(): void {
+    this.release()
+  }
+
+  async listTerms(): Promise<Term[]> {
+    return [{ code: TERM, description: 'Fall 2026' }]
+  }
+
+  async listSubjects(): Promise<Subject[]> {
+    return SUBJECTS.map((code) => ({ code, description: code }))
+  }
+
+  async fetchSections(
+    _school: SchoolConfig,
+    _term: string,
+    subject: string,
+    _opts: FetchOptions = {}
+  ): Promise<RawSection[]> {
+    this.subject = subject
+    this.fetches.push(subject)
+    this.enter()
+    await this.gate
+    return []
+  }
+}
+
 describe('multi-worker leasing', () => {
   let dir: string
   let dbA: Db
@@ -239,6 +285,78 @@ describe('multi-worker leasing', () => {
     const result = await a.tick()
     expect(result.outcomes.every((o) => o.ok === false)).toBe(true)
     expect(repoA.listTargets().filter((t) => t.lease_owner !== null)).toEqual([])
+  })
+
+  it('holds the target through a fetch that outlasts the lease', async () => {
+    // The window that used to be open, and the worst possible moment for it.
+    // A lease was a flat two minutes with nothing renewing it, while one
+    // fetchSections is the session handshake plus two requests per page, each
+    // of which may retry and each of which honours Retry-After up to a minute.
+    // So a registrar answering 429 stretched a fetch past the lease, and a
+    // second worker claimed the same subject: the fleet doubled its request
+    // rate at a registrar precisely when that registrar was asking us to slow
+    // down.
+    const fetches: string[] = []
+    const suspended = new SuspendingAdapter(fetches)
+    const a = new Poller(repoA, new Map<SisId, SisAdapter>([['banner9', suspended]]), null, {
+      now: () => clock.now,
+      random: () => 0.5,
+      batchSize: 1,
+      workerId: 'worker-a',
+      leaseMs: 120_000,
+      // Real milliseconds, because the renewal is a wall clock timer while
+      // leaseMs is measured on the injected clock this test moves by hand.
+      leaseRenewMs: 5,
+    })
+    const b = workerFor(repoB, 'worker-b', fetches, SUBJECTS.length)
+
+    const inFlight = a.tick()
+    await suspended.started
+    // Past the expiry the claim was taken with, then long enough in real time
+    // for the renewal timer to notice and push it back out.
+    clock.now += 120_001
+    await new Promise((r) => setTimeout(r, 40))
+
+    expect((await b.tick()).outcomes.map((o) => o.targetId)).not.toContain(suspended.claimed)
+
+    suspended.finish()
+    await inFlight
+
+    // One request per subject across the fleet, which is the entire claim.
+    expect(fetches.filter((s) => s === suspended.subject)).toHaveLength(1)
+  })
+
+  it('does not unlatch the new owner when a lapsed worker finally reports back', async () => {
+    // Renewal makes this rare rather than impossible: a worker suspended by the
+    // operating system, or one whose database write blocked, still comes back
+    // to a target somebody else now owns. Recording its result must not free
+    // that lease, or a third worker takes the same subject while the second is
+    // mid-fetch.
+    const fetches: string[] = []
+    const suspended = new SuspendingAdapter(fetches)
+    const a = new Poller(repoA, new Map<SisId, SisAdapter>([['banner9', suspended]]), null, {
+      now: () => clock.now,
+      random: () => 0.5,
+      batchSize: 1,
+      workerId: 'worker-a',
+      leaseMs: 60_000,
+      // Never fires within the test, so this is the un-renewed case on purpose.
+      leaseRenewMs: 10 * 60_000,
+    })
+
+    const inFlight = a.tick()
+    await suspended.started
+    clock.now += 60_001
+
+    const stolen = repoB.claimTargets('worker-b', SUBJECTS.length, clock.now, 60_000)
+    expect(stolen.map((t) => t.id)).toContain(suspended.claimed)
+
+    suspended.finish()
+    await inFlight
+
+    const after = repoB.getTarget(suspended.claimed)!
+    expect(after.lease_owner).toBe('worker-b')
+    expect(after.lease_expires_at).toBe(clock.now + 60_000)
   })
 
   it('gives a second worker nothing when the first has already taken it all', async () => {

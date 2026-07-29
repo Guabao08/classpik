@@ -22,10 +22,18 @@ import type { SubjectDiscovery } from './discovery.js'
  */
 
 /**
- * How long a claim is good for. Comfortably longer than one fetch, including
- * the retries and the inter-request gap PoliteClient imposes, and short enough
- * that a worker killed mid-poll costs one delayed cycle rather than a target
- * nobody polls again.
+ * How long a claim is good for from the last time this worker said anything.
+ *
+ * Longer than one HTTP request, which PoliteClient now caps at a known ceiling,
+ * and short enough that a worker killed mid-poll costs one delayed cycle rather
+ * than a target nobody polls again.
+ *
+ * It is deliberately NOT long enough for a whole `fetchSections`, and it cannot
+ * be: a fetch is several requests, each may retry, and a registrar answering
+ * 429 with `Retry-After: 60` stretches all of them. A fixed expiry covering
+ * that worst case would also be how long a genuinely dead worker strands the
+ * students watching that subject. So the expiry stays short and the live worker
+ * renews it while it works. See `holdLease`.
  */
 export const DEFAULT_LEASE_MS = 120_000
 
@@ -44,6 +52,14 @@ export interface PollerOptions {
   workerId?: string
   /** How long a claimed target stays claimed if this worker never comes back. */
   leaseMs?: number
+  /**
+   * How often, in real milliseconds, a held lease is pushed back out while a
+   * fetch is in flight. Separate from `leaseMs` because that one is measured on
+   * the injected clock, which a test moves by hand, and this one is a wall
+   * clock timer. In production they are the same clock and the default of a
+   * third of the lease is what you want.
+   */
+  leaseRenewMs?: number
 }
 
 export interface PollOutcome {
@@ -70,6 +86,7 @@ export class Poller {
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void
   readonly workerId: string
   private readonly leaseMs: number
+  private readonly leaseRenewMs: number
 
   constructor(
     private readonly repo: Repo,
@@ -83,6 +100,7 @@ export class Poller {
     this.log = opts.log ?? (() => {})
     this.workerId = opts.workerId ?? newWorkerId()
     this.leaseMs = opts.leaseMs ?? DEFAULT_LEASE_MS
+    this.leaseRenewMs = opts.leaseRenewMs ?? Math.max(1, Math.floor(this.leaseMs / 3))
   }
 
   /**
@@ -132,7 +150,10 @@ export class Poller {
       return this.fail(target, `no adapter for sis "${school.sis}"`, true)
     }
 
+    // The fetch is the only slow part, and the only part a lease has to outlast.
+    // Everything after it is synchronous database work.
     let fetched
+    const release = this.holdLease(target.id)
     try {
       fetched = await adapter.fetchSections(school, target.term, target.subject, { signal })
     } catch (err) {
@@ -140,6 +161,8 @@ export class Poller {
       const message = err instanceof Error ? err.message : String(err)
       this.log('poll failed', { target: target.id, error: message, transient })
       return this.fail(target, message, !transient)
+    } finally {
+      release()
     }
 
     const stored = this.repo.getSectionStates(target.id)
@@ -176,7 +199,7 @@ export class Poller {
 
     const interval = this.intervalFor(school, target, changed)
     const nextPollAt = this.now() + interval
-    this.repo.recordPollSuccess(target.id, nextPollAt, interval, changed)
+    this.repo.recordPollSuccess(target.id, nextPollAt, interval, changed, this.workerId)
 
     return {
       targetId: target.id,
@@ -187,6 +210,39 @@ export class Poller {
       removed: removed.length,
       nextPollAt,
     }
+  }
+
+  /**
+   * Keep this worker's claim alive for as long as the fetch runs, and return
+   * the function that stops doing so.
+   *
+   * Without this the lease was a fixed 120s and a fetch could legitimately run
+   * many multiples of that: one `fetchSections` is two requests per page plus
+   * the session handshake, and PoliteClient honours `Retry-After` up to a
+   * minute on each. The window opened precisely when a registrar was rate
+   * limiting us, which is the exact moment doubling our request rate does the
+   * most harm.
+   *
+   * `renewLease` refuses to renew a lease this worker no longer owns, so a
+   * worker that already lost the target quietly stops renewing rather than
+   * stealing it back from whoever has it now.
+   */
+  private holdLease(targetId: string): () => void {
+    const timer = setInterval(() => {
+      try {
+        this.repo.renewLease(targetId, this.workerId, this.now() + this.leaseMs)
+      } catch (err) {
+        // A closed database during shutdown, most likely. The lease expiring is
+        // a recoverable outcome, so this must never take the poll down with it.
+        this.log('could not renew a lease', {
+          target: targetId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }, this.leaseRenewMs)
+    // Bookkeeping should never be the reason a process refuses to exit.
+    timer.unref?.()
+    return () => clearInterval(timer)
   }
 
   /** Record an event and queue a notification for each active watcher. */
@@ -256,7 +312,7 @@ export class Poller {
       this.random
     )
     const nextPollAt = this.now() + interval
-    this.repo.recordPollError(target.id, nextPollAt, message, permanent)
+    this.repo.recordPollError(target.id, nextPollAt, message, permanent, this.workerId)
 
     return {
       targetId: target.id,
@@ -291,6 +347,13 @@ export interface RunnerOptions {
    * per (school, term) every time it runs.
    */
   discoveryIntervalMs?: number
+  /**
+   * How long to wait after a discovery run that did not finish. Minutes, not
+   * the full interval: a run aborted by the tick budget has left part of the
+   * catalogue undiscovered, and waiting a day to try again means the same
+   * schools fail at the same point tomorrow.
+   */
+  discoveryRetryMs?: number
 }
 
 /** Wraps Poller and Dispatcher in a loop that can be started and stopped cleanly. */
@@ -300,13 +363,17 @@ export class Runner {
   /** When the in-flight tick started, so a wedged one can be abandoned. */
   private runningSince = 0
   private lastPurgeAt = 0
-  private lastDiscoveryAt = 0
+  /** When discovery may next run. 0 means now. */
+  private discoveryDueAt = 0
+  /** Guards against a second tick starting discovery while the first is still in it. */
+  private discovering = false
   private readonly controller = new AbortController()
   private readonly tickIntervalMs: number
   private readonly tickBudgetMs: number
   private readonly purgeIntervalMs: number
   private readonly discovery: SubjectDiscovery | null
   private readonly discoveryIntervalMs: number
+  private readonly discoveryRetryMs: number
   private readonly repo: Repo | null
   private readonly now: () => number
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void
@@ -321,6 +388,7 @@ export class Runner {
     this.purgeIntervalMs = opts.purgeIntervalMs ?? 60 * 60_000
     this.discovery = opts.discovery ?? null
     this.discoveryIntervalMs = opts.discoveryIntervalMs ?? 24 * 60 * 60_000
+    this.discoveryRetryMs = opts.discoveryRetryMs ?? 5 * 60_000
     this.repo = opts.repo ?? null
     this.now = opts.now ?? Date.now
     this.log = opts.log ?? (() => {})
@@ -341,7 +409,12 @@ export class Runner {
       this.running = true
       this.runningSince = this.now()
       try {
-        await this.refreshSubjects()
+        // Not awaited. Discovery talks to a registrar over several requests and
+        // used to sit in front of the poll, so a school with a slow catalogue
+        // delayed every watched section by a full tick on the day it ran. The
+        // watches are what this service is for; the browsable catalogue is a
+        // convenience that can finish whenever it finishes.
+        void this.refreshSubjects()
         const result = await this.poller.tick(this.controller.signal)
         if (result.polled > 0) {
           this.log('tick', { polled: result.polled, queued: result.notificationsQueued })
@@ -387,21 +460,37 @@ export class Runner {
    *
    * Budgeted like delivery is, because it talks to a registrar and a registrar
    * that accepts a connection and then says nothing is what wedges a loop.
+   *
+   * The next run is scheduled from the OUTCOME, not from the start. Stamping it
+   * up front meant an aborted run counted as a completed one: whatever the
+   * budget cut off was not retried for another twenty-four hours, at which
+   * point it started from the same first school and stopped in the same place,
+   * so the tail of the list was never discovered at all. A run that did not
+   * finish, or that finished with any school unanswered, is retried in minutes
+   * instead.
    */
   private async refreshSubjects(): Promise<void> {
-    if (!this.discovery) return
+    if (!this.discovery || this.discovering) return
     const at = this.now()
-    if (this.lastDiscoveryAt !== 0 && at - this.lastDiscoveryAt < this.discoveryIntervalMs) return
-    this.lastDiscoveryAt = at
+    if (at < this.discoveryDueAt) return
+    this.discovering = true
     try {
       const found = await this.withBudget(this.discovery.run(this.controller.signal), 'discovery')
+      // A run that finished with errors is a partial catalogue, not a done one.
+      // `run` swallows a per-term failure so one registrar cannot stop the
+      // others, which means the only trace of it is this count.
+      this.discoveryDueAt =
+        this.now() + (found.errors > 0 ? this.discoveryRetryMs : this.discoveryIntervalMs)
       if (found.queried > 0) this.log('subject discovery', { ...found })
     } catch (err) {
       // Never fatal, for the same reason it is never fatal inside run(): the
       // watches we already have are worth more than the catalogue is.
+      this.discoveryDueAt = this.now() + this.discoveryRetryMs
       this.log('subject discovery did not finish', {
         error: err instanceof Error ? err.message : String(err),
       })
+    } finally {
+      this.discovering = false
     }
   }
 
@@ -427,7 +516,10 @@ export class Runner {
     this.timer = null
     this.controller.abort()
     // Let an in-flight tick unwind before the caller closes the database.
-    for (let i = 0; i < 100 && this.running; i++) {
+    // Discovery is included because it no longer runs inside the tick, so a
+    // caller closing the database would otherwise pull it out from under a
+    // catalogue write that is still in flight.
+    for (let i = 0; i < 100 && (this.running || this.discovering); i++) {
       await new Promise((r) => setTimeout(r, 20))
     }
   }

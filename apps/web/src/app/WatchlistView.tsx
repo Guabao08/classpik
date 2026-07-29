@@ -2,6 +2,9 @@ import { SeatBar, StatusPill } from '../components/ui'
 import type { Channel, School, Watch } from '../lib/api'
 import type { Mode } from './AppShell'
 
+/** The one place the watchlist table's columns are written down. */
+const COLUMNS = 'md:grid md:grid-cols-[1.6fr_0.9fr_0.8fr_1.1fr_1.1fr_auto] md:gap-4'
+
 /**
  * Every watch this account holds, in full.
  *
@@ -39,8 +42,8 @@ export default function WatchlistView({
   const strayCount = watches.filter((w) => elsewhere(w.section.schoolId)).length
 
   return (
-    <div className="px-9 py-8">
-      <header className="mb-7 flex items-start justify-between gap-6">
+    <div className="px-5 py-6 md:px-9 md:py-8">
+      <header className="mb-7 flex flex-col items-start justify-between gap-4 sm:flex-row sm:gap-6">
         <div>
           <h1 className="text-2xl font-bold tracking-[-0.02em]">Watchlist</h1>
           <p className="mt-1.5 text-sm text-muted">
@@ -73,7 +76,10 @@ export default function WatchlistView({
         </div>
       ) : (
         <div className="panel overflow-hidden">
-          <div className="grid grid-cols-[1.6fr_0.9fr_0.8fr_1.1fr_1.1fr_auto] gap-4 border-b border-line px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted">
+          {/* Hidden below the breakpoint, where each row becomes a labelled
+              card. Six columns in a phone's width is unreadable, and a phone is
+              where a seat alert is read. */}
+          <div className={`hidden border-b border-line px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted ${COLUMNS}`}>
             <span>Course</span>
             <span>Seats</span>
             <span>Status</span>
@@ -87,7 +93,7 @@ export default function WatchlistView({
             return (
               <div
                 key={w.id}
-                className="grid grid-cols-[1.6fr_0.9fr_0.8fr_1.1fr_1.1fr_auto] items-center gap-4 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2"
+                className={`flex flex-col gap-2.5 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2 md:items-center ${COLUMNS}`}
               >
                 <div className="min-w-0">
                   <div className="flex items-baseline gap-2">
@@ -167,7 +173,7 @@ export default function WatchlistView({
                 <button
                   onClick={() => onToggle(s.id)}
                   aria-label={`Stop watching ${s.code}`}
-                  className="rounded-lg px-2 py-1.5 text-xs text-muted transition-colors hover:text-full"
+                  className="self-start rounded-lg px-2 py-1.5 text-xs text-muted transition-colors hover:text-full md:self-auto"
                 >
                   Remove
                 </button>

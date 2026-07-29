@@ -165,8 +165,10 @@ route(
  * The browsable subject catalogue for one school and term.
  *
  * `seeded` is the honest signal a client needs: false means we know the subject
- * exists and have never asked the registrar what is in it, so its sections are
- * not searchable yet and a seed is what changes that. Public, because reading
+ * exists and nothing has ever asked the registrar what is in it, so its sections
+ * are not searchable yet and a seed is what changes that. It covers both routes
+ * to a poll target, the config's own subject list and an on-demand browse, since
+ * from a student's point of view they are the same fact. Public, because reading
  * the catalogue costs nothing upstream. Seeding is not.
  */
 route(
@@ -188,7 +190,10 @@ route(
           term: s.term,
           code: s.code,
           description: s.description,
-          seeded: s.seeded_at !== null,
+          // Either route to a poll target counts. A school onboarded from its
+          // config list has never set seeded_at, and reporting those subjects
+          // as unfetched told a client to buy a fetch it already has.
+          seeded: s.seeded_at !== null || s.has_target === 1,
         })),
       },
     }
@@ -995,6 +1000,26 @@ function readPreferences(
     patch.term = term
   }
 
+  /**
+   * A move to a different named school. Clearing the school to null is
+   * deliberately not one, exactly as in `GET /api/sections`: an account with
+   * levels and no school asked for undergraduate classes wherever they are.
+   */
+  const moved =
+    patch.schoolId !== undefined &&
+    patch.schoolId !== null &&
+    patch.schoolId !== current.schoolId
+
+  if (moved && !('term' in b) && current.term !== null) {
+    // The stored term is another school's code and 202608 is Fall 2026 at one
+    // school and nothing at all at the next. Only dropped where we can prove it
+    // is meaningless, though: a school whose terms are not discovered yet
+    // proves nothing, and guessing there would clear a term the student may
+    // still want once discovery catches up.
+    const known = ctx.repo.listTerms(patch.schoolId!)
+    if (known.length > 0 && !known.some((t) => t.code === current.term)) patch.term = null
+  }
+
   if ('levels' in b) {
     const raw = b.levels
     if (raw === null) patch.levels = []
@@ -1005,6 +1030,19 @@ function readPreferences(
         throw new HttpError(400, err instanceof Error ? err.message : 'invalid levels')
       }
     }
+  } else if (moved) {
+    // Moving school with nothing said about levels clears them, for the same
+    // reason `GET /api/sections` drops them when a search is pointed at another
+    // school: the codes are institution-defined, and UGRD at a PeopleSoft
+    // school is UG at a Banner one. Carried across, they filter the new
+    // school's catalog on a code it has never published, so Find classes comes
+    // back empty and reads as a school we failed to load rather than as a
+    // filter the student can undo.
+    //
+    // This used to be defended only on the per-request path, so the guarantee
+    // rested on both UI call sites happening to send `levels: null`. A transfer
+    // student on any other client, a mobile app or curl, got the empty catalog.
+    patch.levels = []
   }
 
   return patch

@@ -193,6 +193,46 @@ describe('PoliteClient', () => {
     await expect(c2.json('https://x.test/')).rejects.toThrow(/Login required/)
   })
 
+  it('gives up rather than spend more than its total budget on one request', async () => {
+    // Retries multiplied out to over four minutes for a single call: three
+    // retries at a 20s timeout, each honouring a 60s Retry-After. The poller's
+    // lease was written against a much smaller number than that, so the window
+    // where two workers fetched the same subject opened exactly when a
+    // registrar was rate limiting us.
+    let t = 0
+    const s = stub([() => new Response('wait', { status: 429, headers: { 'retry-after': '60' } })])
+    const client = new PoliteClient({
+      fetchImpl: s.fetchImpl,
+      minRequestGapMs: 0,
+      maxRetries: 100,
+      maxTotalMs: 90_000,
+      // The clock moves with the sleep, which is what a real wait does.
+      sleep: async (ms) => { t += ms },
+      now: () => t,
+    })
+
+    await expect(client.request('https://x.test/')).rejects.toThrow(/429 after 2 attempts/)
+    // maxRetries alone would have allowed a hundred.
+    expect(s.count).toBe(2)
+    expect(t).toBeLessThanOrEqual(90_000)
+  })
+
+  it('leaves a request that fits inside the budget alone', async () => {
+    let t = 0
+    const s = stub([
+      () => new Response('wait', { status: 429, headers: { 'retry-after': '5' } }),
+      ok,
+    ])
+    const client = new PoliteClient({
+      fetchImpl: s.fetchImpl,
+      minRequestGapMs: 0,
+      maxTotalMs: 90_000,
+      sleep: async (ms) => { t += ms },
+      now: () => t,
+    })
+    expect((await client.request('https://x.test/')).status).toBe(200)
+  })
+
   it('aborts a request that exceeds the timeout', async () => {
     const fetchImpl = (async (_u: string | URL, init: RequestInit = {}) =>
       new Promise<Response>((_resolve, reject) => {

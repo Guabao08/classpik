@@ -11,6 +11,7 @@ import { SisError } from './types.js'
  *   - at most N in-flight requests per host
  *   - a hard floor on the gap between two requests to the same host
  *   - exponential backoff with jitter on 429 and 5xx, honouring Retry-After
+ *   - a hard ceiling on how long one `request()` may spend in total
  *   - an identifying User-Agent so an admin can find us instead of guessing
  */
 
@@ -19,6 +20,14 @@ export interface PoliteClientOptions {
   minRequestGapMs?: number
   timeoutMs?: number
   maxRetries?: number
+  /**
+   * Ceiling on one `request()` including every retry and every wait between
+   * them, so the caller has a number to reason about rather than a product of
+   * limits. Without it, three retries at a 20s timeout with a 60s `Retry-After`
+   * honoured each time is over four minutes for one call, which is what made
+   * the poller's lease a fiction.
+   */
+  maxTotalMs?: number
   userAgent?: string
   fetchImpl?: typeof fetch
   sleep?: (ms: number) => Promise<void>
@@ -45,6 +54,7 @@ export class PoliteClient {
   readonly minRequestGapMs: number
   readonly timeoutMs: number
   readonly maxRetries: number
+  readonly maxTotalMs: number
   private readonly userAgent: string
   private readonly fetchImpl: typeof fetch
   private readonly sleep: (ms: number) => Promise<void>
@@ -56,6 +66,7 @@ export class PoliteClient {
     this.minRequestGapMs = opts.minRequestGapMs ?? 350
     this.timeoutMs = opts.timeoutMs ?? 20_000
     this.maxRetries = opts.maxRetries ?? 3
+    this.maxTotalMs = opts.maxTotalMs ?? 90_000
     this.userAgent = opts.userAgent ?? DEFAULT_UA
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch
     this.sleep = opts.sleep ?? defaultSleep
@@ -70,7 +81,15 @@ export class PoliteClient {
 
   async request(url: string, init: RequestInit = {}): Promise<Response> {
     const host = new URL(url).host
+    const startedAt = this.now()
     let attempt = 0
+
+    // A retry we can already see will blow the budget is not worth waiting for,
+    // so the check happens before the sleep rather than after it. That bounds
+    // one request() at roughly maxTotalMs plus the timeout of the attempt that
+    // is already running.
+    const wouldOverrun = (delay: number): boolean =>
+      this.now() - startedAt + delay > this.maxTotalMs
 
     for (;;) {
       await this.acquire(host)
@@ -79,20 +98,22 @@ export class PoliteClient {
         res = await this.send(url, init)
       } catch (err) {
         this.release(host)
-        if (attempt >= this.maxRetries) {
+        const delay = this.backoffMs(attempt)
+        if (attempt >= this.maxRetries || wouldOverrun(delay)) {
           throw new SisError(`request failed after ${attempt + 1} attempts: ${url}`, err, true)
         }
-        await this.sleep(this.backoffMs(attempt))
+        await this.sleep(delay)
         attempt++
         continue
       }
       this.release(host)
 
       if (res.status === 429 || res.status >= 500) {
-        if (attempt >= this.maxRetries) {
+        const delay = this.retryDelayMs(res, attempt)
+        if (attempt >= this.maxRetries || wouldOverrun(delay)) {
           throw new SisError(`upstream ${res.status} after ${attempt + 1} attempts: ${url}`, null, true)
         }
-        await this.sleep(this.retryDelayMs(res, attempt))
+        await this.sleep(delay)
         attempt++
         continue
       }

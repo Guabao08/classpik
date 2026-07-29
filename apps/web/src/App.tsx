@@ -42,6 +42,12 @@ export default function App() {
 
   if (route === '/app') {
     if (!session.checked) return <Loading />
+    // A monitor that is down is not a signed-out student. useSession goes to
+    // the trouble of telling those apart, and this used to read only
+    // `user === null`, so an unreachable monitor bounced a student with a
+    // perfectly good token to a sign-in form that could not work either. They
+    // had every reason to think their account had been deleted.
+    if (session.user === null && session.offline !== null) return <Offline message={session.offline} />
     // The whole path rides along, not just "/app", so a deep link finishes
     // where it was pointed rather than at the app's front door.
     if (session.user === null) return <Redirect to={`/login?next=${encodeURIComponent(path)}`} />
@@ -53,6 +59,7 @@ export default function App() {
     if (session.user !== null) return <Redirect to={next} />
     return (
       <SignInView
+        offline={session.offline}
         onSignedIn={(user) => {
           session.setUser(user)
           // Replace, so Back from the app goes where they came from rather
@@ -74,7 +81,35 @@ export default function App() {
     )
   }
 
-  return <Landing />
+  return <Landing signedIn={session.user !== null} />
+}
+
+/**
+ * The monitor could not be reached, which is a different fact from being signed
+ * out and has to look different. Naming the address is most of the fix: in
+ * development this is almost always a monitor nobody started.
+ */
+function Offline({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-ink px-6">
+      <div className="panel max-w-md px-6 py-8 text-center">
+        <h1 className="text-lg font-bold tracking-[-0.01em]">Cannot reach the monitor</h1>
+        <p className="mt-2 text-sm text-muted">{message}</p>
+        <p className="mt-4 text-xs leading-relaxed text-muted">
+          You are still signed in. This is the seat watcher itself being unreachable, not your
+          account. Start it with{' '}
+          <code className="num rounded bg-white/8 px-1.5 py-0.5">npm run serve -- --demo</code> in
+          apps/monitor.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="mt-6 rounded-full bg-open px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110"
+        >
+          Try again
+        </button>
+      </div>
+    </div>
+  )
 }
 
 /** `/app/` and `/app` are the same screen. Only the root keeps its slash. */
@@ -102,10 +137,10 @@ function Redirect({ to }: { to: string }) {
   return <Loading />
 }
 
-function Landing() {
+function Landing({ signedIn }: { signedIn: boolean }) {
   return (
     <div className="min-h-screen bg-ink">
-      <Nav />
+      <Nav signedIn={signedIn} />
       <Hero />
 
       <section className="mx-auto max-w-6xl px-6 py-8">

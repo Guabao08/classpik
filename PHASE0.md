@@ -1,10 +1,12 @@
 # Phase 0: Feasibility Spike
 
-**Goal:** find out whether OSCAR will accept an enrollment request sent by a script instead of by a human clicking buttons.
+**Goal:** find out whether Georgia Tech's Banner 9 registration app, at `registration.banner.gatech.edu`, will accept an enrollment request sent by a script instead of by a human clicking buttons.
+
+**Host, before anything else:** it is `registration.banner.gatech.edu`, not `oscar.gatech.edu`. OSCAR still serves the old Banner 8 self-service pages, and every `/StudentRegistrationSsb/` path on that host 404s. Part B below proved this the hard way. Do not lose a registration window to it.
 
 **Why first:** every other decision in `ARCHITECTURE.md` assumes the answer is yes. If it's no, the enrollment half of ClassPik is a different (slower) product and we need to know that now, not in October. This is a few hours of clicking in DevTools, not a build.
 
-**Owner:** Roshan (Georgia Tech / OSCAR / Banner 9)
+**Owner:** Roshan (Georgia Tech, Banner 9 at `registration.banner.gatech.edu`)
 **Also do:** Andy repeats Part A on DukeHub (PeopleSoft), which is different enough to need its own answer.
 
 Nothing here is product code. It's a question we're answering with a browser and a terminal.
@@ -27,13 +29,13 @@ Do B and A1/A2 now. A3 waits for your window. **Phase 1 does not depend on A3 at
 
 ### A1: Capture the request *(no window needed)*
 
-**A rejected add is still a successful capture.** If your time ticket isn't active, OSCAR will refuse the enrollment, but the browser still *sends* the request, and that request has the same URL, headers, token, and body shape it will have when your window is open. The only thing that changes is the server's answer. So you can learn the entire request shape today and write the adapter against it.
+**A rejected add is still a successful capture.** If your time ticket isn't active, Banner will refuse the enrollment, but the browser still *sends* the request, and that request has the same URL, headers, token, and body shape it will have when your window is open. The only thing that changes is the server's answer. So you can learn the entire request shape today and write the adapter against it.
 
 Bonus: "you have no registration time ticket" is one of the error responses the product has to parse anyway. Capturing it now is real work, not a consolation prize.
 
 #### Watch what the browser actually sends
 
-1. Open Chrome → `oscar.gatech.edu` → log in (GT SSO + Duo).
+1. Open Chrome → `registration.banner.gatech.edu` → log in (GT SSO + Duo). Not `oscar.gatech.edu`: that host serves Banner 8 and fires no `/StudentRegistrationSsb/` requests at all, so there is nothing to capture there.
 2. Go to **Registration → Register for Classes** and select a term.
 3. Open DevTools (`F12`) → **Network** tab.
    - Check **Preserve log**
@@ -73,7 +75,7 @@ The actual experiment. When your time ticket is active:
 1. Add the junk class in the UI. Capture the submit request again (tokens will be stale from A1).
 2. **Drop the class.** Confirm you're not registered.
 3. Paste the cURL into a terminal and run it.
-4. Refresh OSCAR.
+4. Refresh the registration page.
 
 **Are you registered again?** That's the whole question.
 
@@ -149,5 +151,7 @@ polling of Georgia Tech.
 `notes/phase0-gatech.md` answers every checkbox above and ends with a one-line verdict:
 
 > **Verdict:** raw-HTTP hot path is / isn't viable at GT, because ___.
+
+Part B is already done and needs no repeating. Part A is the whole of what is left.
 
 Then we start Phase 1.

@@ -460,6 +460,92 @@ describe('Repo', () => {
       expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
     })
 
+    it('keeps a target claimable when its only poll ever was a transient error', () => {
+      // The failure that used to delete a subject from the catalog for good. A
+      // bootstrap fetch that 503s creates no sections, so no watch can ever
+      // point at the target, and the error is not permanent so `active` stays
+      // 1. Keyed on last_polled_at alone, that target was never claimed again,
+      // nothing reported it as dead, and stats counted it as healthy.
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'PHIL', 60_000)
+      env.repo.claimTargets('w1', 10, env.clock.now)
+      env.repo.recordPollError(target.id, env.clock.now + 1000, 'upstream 503', false, 'w1')
+
+      expect(env.repo.getTarget(target.id)!.active).toBe(1)
+      // Still polite: the error backoff on next_poll_at is respected.
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+
+      env.clock.now += 1001
+      expect(env.repo.claimTargets('w1', 10, env.clock.now).map((t) => t.id)).toEqual([target.id])
+    })
+
+    it('keeps retrying a target that has failed many times and never succeeded', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'PHIL', 60_000)
+      for (let i = 0; i < 5; i++) {
+        env.repo.recordPollError(target.id, env.clock.now - 1, 'upstream 503')
+      }
+      expect(env.repo.claimTargets('w1', 10, env.clock.now).map((t) => t.id)).toEqual([target.id])
+    })
+
+    it('goes quiet again once a poll has actually produced something', () => {
+      // The retry window closes on the first success, not on the first attempt.
+      // Otherwise a subject that genuinely has no classes is polled forever.
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'PHIL', 60_000)
+      env.repo.recordPollError(target.id, env.clock.now - 1, 'upstream 503')
+      env.repo.recordPollSuccess(target.id, env.clock.now - 1, 60_000, false)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+
+      // And a later error does not reopen it, because it did answer once.
+      env.repo.recordPollError(target.id, env.clock.now - 1, 'upstream 503')
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+    })
+
+    it('still refuses a never-productive target a permanent error switched off', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'PHIL', 60_000)
+      env.repo.recordPollError(target.id, env.clock.now - 1, 'no such subject', true)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+    })
+
+    it('renews only a lease the asking worker still holds', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      env.repo.claimTargets('w1', 1, env.clock.now, 30_000)
+
+      expect(env.repo.renewLease(target.id, 'w1', env.clock.now + 90_000)).toBe(true)
+      expect(env.repo.getTarget(target.id)!.lease_expires_at).toBe(env.clock.now + 90_000)
+
+      // A worker that lost the target cannot take it back by renewing, which
+      // would put two of us at the same registrar for one subject.
+      expect(env.repo.renewLease(target.id, 'w2', env.clock.now + 999_000)).toBe(false)
+      expect(env.repo.getTarget(target.id)!.lease_expires_at).toBe(env.clock.now + 90_000)
+    })
+
+    it('will not let a lapsed worker unlatch the lease of the one that replaced it', () => {
+      // Worker A's lease expires mid-fetch, B claims the target and starts its
+      // own fetch, then A comes back and records. Clearing the lease
+      // unconditionally handed the same target to a third worker while B was
+      // still in flight.
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      env.repo.claimTargets('worker-a', 1, env.clock.now, 30_000)
+      env.clock.now += 30_001
+      env.repo.claimTargets('worker-b', 1, env.clock.now, 30_000)
+
+      env.repo.recordPollSuccess(target.id, env.clock.now + 60_000, 60_000, false, 'worker-a')
+      const after = env.repo.getTarget(target.id)!
+      expect(after.lease_owner).toBe('worker-b')
+      expect(after.lease_expires_at).toBe(env.clock.now + 30_000)
+    })
+
+    it('frees its own lease on the way out, whether the poll worked or not', () => {
+      const ok = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const bad = env.repo.ensureTarget(SCHOOL_ID, TERM, 'CS', 60_000)
+      env.repo.claimTargets('w1', 2, env.clock.now, 30_000)
+
+      env.repo.recordPollSuccess(ok.id, env.clock.now + 1000, 60_000, false, 'w1')
+      env.repo.recordPollError(bad.id, env.clock.now + 1000, 'upstream 503', false, 'w1')
+
+      expect(env.repo.getTarget(ok.id)!.lease_owner).toBeNull()
+      expect(env.repo.getTarget(bad.id)!.lease_owner).toBeNull()
+    })
+
     it('claims a polled target once somebody is watching it', () => {
       const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
       const sid = env.repo.upsertSection(target, section(), false)

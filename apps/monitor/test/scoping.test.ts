@@ -414,6 +414,58 @@ describe('scoping over HTTP', () => {
       ])
     })
 
+    it('clears the old school\'s levels when only the school is moved', async () => {
+      // The transfer student's first request at a new school, and what any
+      // client that is not our own React app sends. The stored UGRD is Test
+      // University's code; Old University publishes UG, so carrying it across
+      // filtered the new catalog on a code that school has never published and
+      // Find classes came back empty with nothing said about why.
+      const there = env.repo.ensureTarget(OLD_SCHOOL, OLD_TERM, 'PHIL', 60_000)
+      env.repo.upsertSection(
+        there,
+        raw({ crn: '50201', subject: 'PHIL', courseNumber: '201', code: 'PHIL 201', title: 'Ethics', level: 'UG' }),
+        false
+      )
+
+      const res = await post('/api/auth/preferences', { school: OLD_SCHOOL })
+      expect(res.status).toBe(200)
+
+      const prefs = preferencesOf(env.repo.getUser(alice.userId)!)
+      expect(prefs.levels).toEqual([])
+      // The old school's term code means nothing here either, and it is dropped
+      // for the same reason once we can prove this school does not publish it.
+      expect(prefs.term).toBeNull()
+
+      // And the point of all of it: the new school's catalog is actually there.
+      expect(await codes('/api/sections')).toEqual(['HIST 101', 'PHIL 201'])
+    })
+
+    it('keeps levels the same request also stated, since that was said on purpose', async () => {
+      const res = await post('/api/auth/preferences', {
+        school: OLD_SCHOOL,
+        term: OLD_TERM,
+        levels: ['UGRD'],
+      })
+      expect(res.status).toBe(200)
+      expect(preferencesOf(env.repo.getUser(alice.userId)!)).toEqual({
+        schoolId: OLD_SCHOOL, term: OLD_TERM, levels: ['UGRD'],
+      })
+    })
+
+    it('leaves levels alone when the school is not what changed', async () => {
+      await post('/api/auth/preferences', { term: NEXT_TERM })
+      expect(preferencesOf(env.repo.getUser(alice.userId)!).levels).toEqual(['UGRD'])
+
+      // Re-stating the same school is not a move either.
+      await post('/api/auth/preferences', { school: SCHOOL_ID })
+      expect(preferencesOf(env.repo.getUser(alice.userId)!).levels).toEqual(['UGRD'])
+    })
+
+    it('keeps levels when the school is cleared, which asked for them everywhere', async () => {
+      await post('/api/auth/preferences', { school: null })
+      expect(preferencesOf(env.repo.getUser(alice.userId)!).levels).toEqual(['UGRD'])
+    })
+
     it('refuses a school that does not exist rather than scoping to nothing', async () => {
       const res = await post('/api/auth/preferences', { school: 'not-a-school' })
       expect(res.status).toBe(400)

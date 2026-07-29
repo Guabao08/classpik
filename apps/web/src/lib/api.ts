@@ -139,6 +139,32 @@ export interface SearchScope {
   levels: string[]
 }
 
+/**
+ * A subject the school publishes in a term.
+ *
+ * `seeded` is the whole reason this list is worth showing. False means the
+ * monitor knows the subject exists and has never asked the registrar what is in
+ * it, so no amount of waiting will fill it in: somebody has to ask. Discovery
+ * deliberately creates no polling work, which is what keeps a two hundred
+ * subject catalogue from becoming two hundred requests at a registrar.
+ */
+export interface Subject {
+  school: string
+  term: string
+  code: string
+  description: string
+  seeded: boolean
+}
+
+/** What a seed did. `queued` bought a fetch, `already` means one is queued or done. */
+export interface SeedResult {
+  school: string
+  term: string
+  subject: string
+  status: 'queued' | 'already'
+  sections: number
+}
+
 export interface Session {
   token: string
   expiresAt: number
@@ -238,6 +264,22 @@ export const api = {
   },
 
   schools: () => call<School[]>('/api/schools'),
+
+  // The browsable catalogue. Reading it costs nothing upstream, which is why it
+  // is public and why it is safe to list in full.
+  subjects: (school: string, term?: string | null) => {
+    const qs = new URLSearchParams({ school })
+    if (term) qs.set('term', term)
+    return call<{ count: number; subjects: Subject[] }>(`/api/subjects?${qs}`)
+  },
+
+  // The other half, and the one that costs something: this buys a subject its
+  // one bootstrap fetch. It queues rather than fetching, so the answer is
+  // "queued", not sections. Without this the app could show a school onboarded
+  // with `subjects: []` a permanently empty Find classes and nothing a student
+  // did would ever change it.
+  seedSubject: (input: { school: string; term: string; subject: string }) =>
+    call<SeedResult>('/api/subjects/seed', { method: 'POST', body: JSON.stringify(input) }),
 
   // The levels a school publishes, which is where the boxes to tick come from.
   // Asking the catalog rather than hardcoding a pair of them is the point: the
