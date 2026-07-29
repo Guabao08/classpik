@@ -3,13 +3,21 @@ import { Logo } from '../components/ui'
 import SearchView from './SearchView'
 import WatchlistView from './WatchlistView'
 import AlertsView from './AlertsView'
-import { api, ApiError, API_BASE, type EventItem, type Stats, type Watch } from '../lib/api'
+import SignInView from './SignInView'
+import {
+  api,
+  ApiError,
+  API_BASE,
+  getToken,
+  setToken,
+  type EventItem,
+  type Stats,
+  type User,
+  type Watch,
+} from '../lib/api'
 
 export type View = 'search' | 'watchlist' | 'alerts'
 export type Mode = 'notify' | 'claim'
-
-/** No auth yet, so the monitor takes this at face value. See the README. */
-const USER_ID = 'roshan'
 
 const nav: { id: View; label: string; icon: React.ReactNode }[] = [
   {
@@ -44,37 +52,75 @@ const nav: { id: View; label: string; icon: React.ReactNode }[] = [
 
 export default function AppShell() {
   const [view, setView] = useState<View>('search')
+  const [user, setUser] = useState<User | null>(null)
+  // Null while we are still finding out whether the stored token is any good.
+  const [checkedSession, setCheckedSession] = useState(false)
   const [watches, setWatches] = useState<Watch[]>([])
   const [events, setEvents] = useState<EventItem[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
   const [offline, setOffline] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const refresh = useCallback(async () => {
+  // A stored token can be expired or revoked, and the only way to know is to
+  // ask. Until it answers, showing either the app or the sign-in form would be
+  // a guess that flickers when it turns out wrong.
+  useEffect(() => {
+    if (getToken() === null) {
+      setCheckedSession(true)
+      return
+    }
+    api
+      .me()
+      .then((res) => setUser(res.user))
+      .catch((err) => {
+        // Only a 401 means the token is bad. A monitor that is simply down must
+        // not silently sign the user out.
+        if (err instanceof ApiError && err.status === 401) setToken(null)
+        else if (err instanceof ApiError) setOffline(err.message)
+      })
+      .finally(() => setCheckedSession(true))
+  }, [])
+
+  const signOut = useCallback(async () => {
     try {
-      const [w, e, s] = await Promise.all([
-        api.watches(USER_ID),
-        api.events(USER_ID),
-        api.stats(),
-      ])
+      await api.logout()
+    } catch {
+      /* the local token goes either way; a failed revoke is not worth blocking on */
+    }
+    setToken(null)
+    setUser(null)
+    setWatches([])
+    setEvents([])
+    setView('search')
+  }, [])
+
+  const refresh = useCallback(async () => {
+    if (user === null) return
+    try {
+      const [w, e, s] = await Promise.all([api.watches(), api.events(), api.stats()])
       setWatches(w.watches)
       setEvents(e.events)
       setStats(s)
       setOffline(null)
     } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setUser(null)
+        return
+      }
       setOffline(err instanceof ApiError ? err.message : 'Something went wrong')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [user])
 
   useEffect(() => {
+    if (user === null) return
     void refresh()
     // The monitor polls on its own schedule, so the UI just re-reads
     // periodically rather than trying to hold a socket open.
     const timer = setInterval(() => void refresh(), 15_000)
     return () => clearInterval(timer)
-  }, [refresh])
+  }, [refresh, user])
 
   const watchedIds = new Map(watches.map((w) => [w.section.id, w]))
 
@@ -83,7 +129,7 @@ export default function AppShell() {
       const existing = watches.find((w) => w.section.id === sectionId)
       try {
         if (existing) await api.deleteWatch(existing.id)
-        else await api.createWatch({ userId: USER_ID, sectionId })
+        else await api.createWatch({ sectionId })
         await refresh()
       } catch (err) {
         setOffline(err instanceof ApiError ? err.message : 'Could not update the watch')
@@ -95,7 +141,7 @@ export default function AppShell() {
   const setMode = useCallback(
     async (sectionId: string, mode: Mode) => {
       try {
-        await api.createWatch({ userId: USER_ID, sectionId, mode })
+        await api.createWatch({ sectionId, mode })
         await refresh()
       } catch (err) {
         setOffline(err instanceof ApiError ? err.message : 'Could not change the mode')
@@ -103,6 +149,14 @@ export default function AppShell() {
     },
     [refresh]
   )
+
+  if (!checkedSession) {
+    return <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-muted">Loading…</div>
+  }
+
+  if (user === null) {
+    return <SignInView onSignedIn={setUser} />
+  }
 
   return (
     <div className="flex min-h-screen bg-ink">
@@ -141,6 +195,18 @@ export default function AppShell() {
         </nav>
 
         <div className="mt-auto space-y-3">
+          <div className="rounded-xl border border-line bg-white/3 p-3.5">
+            <p className="truncate text-xs font-semibold" title={user.email}>
+              {user.email}
+            </p>
+            <button
+              onClick={() => void signOut()}
+              className="mt-1.5 text-[11px] text-muted transition-colors hover:text-bright"
+            >
+              Sign out
+            </button>
+          </div>
+
           <div className="rounded-xl border border-line bg-white/3 p-3.5">
             <div className="flex items-center gap-2">
               <span

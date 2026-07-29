@@ -144,6 +144,41 @@ const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [
       CREATE INDEX idx_notifications_pending ON notifications (status, next_retry_at);
     `,
   },
+  {
+    version: 2,
+    name: 'accounts',
+    sql: `
+      -- ClassPik accounts. These are our users, never a school login: no row
+      -- here is ever presented to an SIS.
+      CREATE TABLE users (
+        id            TEXT PRIMARY KEY,
+        email         TEXT NOT NULL,
+        -- Uniqueness rides on the normalised form so that Ada@x.edu and
+        -- ada@x.edu cannot become two accounts that both look correct.
+        email_norm    TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        last_login_at INTEGER,
+        -- Consecutive bad passwords, reset by a success. Drives the lockout.
+        failed_logins INTEGER NOT NULL DEFAULT 0,
+        locked_until  INTEGER
+      );
+
+      -- The primary key is the SHA-256 of the bearer token, never the token
+      -- itself, so a database leak yields nothing that can be replayed.
+      CREATE TABLE sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        user_agent TEXT
+      );
+
+      CREATE INDEX idx_sessions_user   ON sessions (user_id, expires_at);
+      CREATE INDEX idx_sessions_expiry ON sessions (expires_at);
+    `,
+  },
 ]
 
 export function openDb(path = ':memory:'): Db {

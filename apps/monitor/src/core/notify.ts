@@ -24,6 +24,24 @@ export interface Transport {
   send(payload: NotificationPayload, target: string | null): Promise<void>
 }
 
+/**
+ * A failure that no amount of waiting will fix: an address that is not an
+ * address, a relay refusing the message outright, a provider rejecting our
+ * credentials. Throwing this skips the retry ladder.
+ *
+ * The point is not to save the four requests. It is that a mistyped address and
+ * a provider outage currently look identical in `notifications.last_error`, so
+ * nobody can tell a student their address is wrong. This mirrors
+ * `SisError.transient` on the fetch side rather than inventing a second
+ * vocabulary for the same idea.
+ */
+export class PermanentDeliveryError extends Error {
+  constructor(message: string, override readonly cause?: unknown) {
+    super(message)
+    this.name = 'PermanentDeliveryError'
+  }
+}
+
 export class ConsoleTransport implements Transport {
   readonly channel = 'console'
   readonly sent: NotificationPayload[] = []
@@ -121,6 +139,16 @@ export class Dispatcher {
     this.transports.set(t.channel, t)
   }
 
+  /** Which channels this process can actually deliver, so the API can refuse a
+   * watch on a channel nobody is listening to instead of queueing it forever. */
+  get channels(): string[] {
+    return [...this.transports.keys()].sort()
+  }
+
+  supports(channel: string): boolean {
+    return this.transports.has(channel)
+  }
+
   /** Drain the pending queue once. Safe to call concurrently with polling. */
   async flush(limit = 50): Promise<DispatchResult> {
     const pending = this.repo.pendingNotifications(limit, this.now())
@@ -134,7 +162,10 @@ export class Dispatcher {
       } catch (err) {
         const attempts = n.attempts + 1
         const message = err instanceof Error ? err.message : String(err)
-        if (attempts >= this.maxAttempts) {
+        // Retrying a permanent rejection five times over eight minutes changes
+        // nothing except how long the real reason takes to surface, and it
+        // leaves four identical rows behind for whoever goes looking.
+        if (err instanceof PermanentDeliveryError || attempts >= this.maxAttempts) {
           this.repo.markNotificationFailed(n.id, message, null)
           result.failed++
         } else {

@@ -69,6 +69,26 @@ export interface WatchRow {
   last_notified_at: number | null
 }
 
+export interface UserRow {
+  id: string
+  email: string
+  email_norm: string
+  password_hash: string
+  created_at: number
+  last_login_at: number | null
+  failed_logins: number
+  locked_until: number | null
+}
+
+export interface SessionRow {
+  token_hash: string
+  user_id: string
+  created_at: number
+  expires_at: number
+  revoked_at: number | null
+  user_agent: string | null
+}
+
 export interface EventRow {
   id: number
   section_id: string
@@ -101,6 +121,17 @@ export function sectionId(schoolId: string, term: string, crn: string): string {
 
 export function targetId(schoolId: string, term: string, subject: string): string {
   return `${schoolId}:${term}:${subject}`
+}
+
+/**
+ * SQLITE_CONSTRAINT_UNIQUE. Checked by code rather than by matching the message
+ * text, so that a foreign-key failure or a full disk is never mistaken for a
+ * duplicate and swallowed.
+ */
+const SQLITE_CONSTRAINT_UNIQUE = 2067
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { errcode?: number }).errcode === SQLITE_CONSTRAINT_UNIQUE
 }
 
 export function statusOf(s: {
@@ -379,6 +410,131 @@ export class Repo {
         `SELECT * FROM sections WHERE ${where.join(' AND ')} ORDER BY code, section LIMIT ?`
       )
       .all(...(args as never[])) as unknown as SectionRow[]
+  }
+
+  // --------------------------------------------------------------- accounts
+
+  /**
+   * Null when the address is taken. The UNIQUE index is the arbiter rather than
+   * a prior SELECT, because two signups for the same address can interleave
+   * between a check and an insert. Any other SQLite failure still throws: a
+   * blanket catch here would turn a full disk into a silent "email taken".
+   */
+  createUser(input: { email: string; emailNorm: string; passwordHash: string }): UserRow | null {
+    const id = randomUUID()
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO users (id, email, email_norm, password_hash, created_at)
+           VALUES (?, ?, ?, ?, ?)`
+        )
+        .run(id, input.email, input.emailNorm, input.passwordHash, this.now())
+    } catch (err) {
+      if (isUniqueViolation(err)) return null
+      throw err
+    }
+    return this.getUser(id)
+  }
+
+  getUser(id: string): UserRow | null {
+    return (this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as unknown as UserRow) ?? null
+  }
+
+  /** Looks up by the normalised address, which is what the UNIQUE index covers. */
+  findUserByEmail(emailNorm: string): UserRow | null {
+    return (
+      (this.db.prepare('SELECT * FROM users WHERE email_norm = ?').get(emailNorm) as unknown as UserRow) ??
+      null
+    )
+  }
+
+  recordLoginSuccess(userId: string, at = this.now()): void {
+    this.db
+      .prepare('UPDATE users SET last_login_at = ?, failed_logins = 0, locked_until = NULL WHERE id = ?')
+      .run(at, userId)
+  }
+
+  /**
+   * Increments and returns the consecutive-failure count. Read back rather than
+   * computed by the caller so two concurrent bad logins cannot both write the
+   * same count and lose one.
+   */
+  countLoginFailure(userId: string): number {
+    this.db.prepare('UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ?').run(userId)
+    return this.getUser(userId)?.failed_logins ?? 0
+  }
+
+  lockUser(userId: string, until: number): void {
+    this.db.prepare('UPDATE users SET locked_until = ? WHERE id = ?').run(until, userId)
+  }
+
+  // --------------------------------------------------------------- sessions
+
+  createSession(input: {
+    userId: string
+    tokenHash: string
+    expiresAt: number
+    userAgent?: string | null
+  }): SessionRow {
+    this.db
+      .prepare(
+        `INSERT INTO sessions (token_hash, user_id, created_at, expires_at, user_agent)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.tokenHash,
+        input.userId,
+        this.now(),
+        input.expiresAt,
+        input.userAgent?.slice(0, 200) ?? null
+      )
+    return this.getSession(input.tokenHash)!
+  }
+
+  getSession(tokenHash: string): SessionRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM sessions WHERE token_hash = ?')
+        .get(tokenHash) as unknown as SessionRow) ?? null
+    )
+  }
+
+  /**
+   * The principal behind a token, or null if there is no live session for it.
+   * Expiry and revocation are both checked in SQL so no caller can forget one.
+   */
+  resolveSession(tokenHash: string, at = this.now()): { user: UserRow; session: SessionRow } | null {
+    const session = (this.db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?`
+      )
+      .get(tokenHash, at) as unknown as SessionRow) ?? null
+    if (!session) return null
+    const user = this.getUser(session.user_id)
+    if (!user) return null
+    return { user, session }
+  }
+
+  /** False when the token was already revoked or never existed. */
+  revokeSession(tokenHash: string, at = this.now()): boolean {
+    const info = this.db
+      .prepare('UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL')
+      .run(at, tokenHash)
+    return Number(info.changes) > 0
+  }
+
+  revokeSessionsForUser(userId: string, at = this.now()): number {
+    const info = this.db
+      .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
+      .run(at, userId)
+    return Number(info.changes)
+  }
+
+  /** Housekeeping. A dead session is unusable either way, this just stops the table growing. */
+  purgeExpiredSessions(before = this.now()): number {
+    const info = this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(before)
+    return Number(info.changes)
   }
 
   // ---------------------------------------------------------------- watches

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse } from 'yaml'
-import type { SchoolConfig, SisId } from '../adapters/types.js'
+import type { PeopleSoftConfig, SchoolConfig, SisId, Term } from '../adapters/types.js'
 
 /**
  * Schools are configuration, not code. Adding a campus is a YAML file and a
@@ -70,6 +70,7 @@ export function parseSchoolConfig(raw: unknown, source: string): SchoolConfig {
     sis: sis as SisId,
     baseUrl: baseUrl.replace(/\/+$/, ''),
     registrationPath: typeof o.registrationPath === 'string' ? o.registrationPath : undefined,
+    peoplesoft: parsePeopleSoft(o, sis as SisId, source),
     polling,
     subjects,
     enabled: o.enabled === undefined ? true : Boolean(o.enabled),
@@ -93,6 +94,90 @@ export function loadSchoolsFromDir(dir: string): SchoolConfig[] {
     out.push(cfg)
   }
   return out
+}
+
+/**
+ * The peoplesoft block, validated hard because every mistake it can contain
+ * fails at 3 AM rather than at load time. A wrong scriptPath returns an HTML
+ * sign in page with a 200; a wrong term code returns an empty class list, which
+ * is indistinguishable from a subject with no classes.
+ */
+function parsePeopleSoft(
+  o: Record<string, unknown>,
+  sis: SisId,
+  source: string
+): PeopleSoftConfig | undefined {
+  const block = asRecord(o.peoplesoft)
+
+  if (sis !== 'peoplesoft') {
+    if (block) {
+      throw new ConfigError(
+        `${source}: a peoplesoft block only applies to sis: peoplesoft, but sis is "${sis}"`
+      )
+    }
+    return undefined
+  }
+  if (!block) {
+    throw new ConfigError(
+      `${source}: sis: peoplesoft needs a peoplesoft block with scriptPath, institution and terms`
+    )
+  }
+
+  const raw = req(block, 'scriptPath', `${source}: peoplesoft`)
+  if (raw.includes('/psp/')) {
+    throw new ConfigError(
+      `${source}: peoplesoft.scriptPath uses the /psp/ portal servlet, which redirects to a sign in ` +
+        `page and answers with HTML and a 200. Copy the /psc/ form of the URL instead.`
+    )
+  }
+  if (!raw.includes('/psc/')) {
+    throw new ConfigError(
+      `${source}: peoplesoft.scriptPath must contain the /psc/ content servlet segment, ` +
+        `for example /psc/csprd/EMPLOYEE/SA/s/`
+    )
+  }
+  const scriptPath = `/${raw.replace(/^\/+/, '').replace(/\/+$/, '')}/`
+  if (!scriptPath.endsWith('/s/')) {
+    throw new ConfigError(
+      `${source}: peoplesoft.scriptPath must end with the /s/ script segment; ` +
+        `copy it verbatim from a working class search URL, up to and including /s/`
+    )
+  }
+
+  const rawTerms = block.terms
+  if (!Array.isArray(rawTerms) || rawTerms.length === 0) {
+    throw new ConfigError(
+      `${source}: peoplesoft.terms must list at least one term. Term codes are institution ` +
+        `defined and two schools on this vendor encode the same semester differently, so they ` +
+        `cannot be derived.`
+    )
+  }
+  const terms: Term[] = rawTerms.map((entry, i) => {
+    const t = asRecord(entry)
+    if (!t) {
+      throw new ConfigError(
+        `${source}: peoplesoft.terms[${i}] must be a mapping with a code, for example ` +
+          `{ code: "1252", description: Spring 2025 }`
+      )
+    }
+    // YAML reads an unquoted 1252 as a number, and every real term code is
+    // digits, so this would reject most correct configs if it insisted on a
+    // string.
+    const code = typeof t.code === 'number' ? String(t.code) : t.code
+    if (typeof code !== 'string' || code.trim() === '') {
+      throw new ConfigError(`${source}: peoplesoft.terms[${i}] is missing a code`)
+    }
+    const description = typeof t.description === 'string' ? t.description.trim() : ''
+    return { code: code.trim(), description: description === '' ? code.trim() : description }
+  })
+
+  return {
+    scriptPath,
+    // Not upper-cased. Sending the code exactly as configured is safer than
+    // deciding we know the convention at an install we have never seen.
+    institution: req(block, 'institution', `${source}: peoplesoft`),
+    terms,
+  }
 }
 
 function req(o: Record<string, unknown>, key: string, source: string): string {

@@ -1,0 +1,75 @@
+# A PeopleSoft school. Adding one is this file, not code.
+#
+# Read this first: the adapter speaks the HighPoint CX JSON class search, which
+# is a licensed third party add on rather than a PeopleSoft feature. Schools
+# that did not buy it serve the older ICAction HTML search instead, and this
+# adapter will 404 against them. Check before writing a config: open the class
+# search in a private window and look at the URL. If it contains
+# WEBLIB_HCX_CM, this adapter fits.
+#
+# Then confirm, by hand, the same two things every school needs:
+#   1. the public class search shows seat counts with no login
+#   2. the school's terms of use do not prohibit automated reads
+# See PHASE0.md in the repo root.
+#
+# Some installs expose HighPoint CX only behind a login. Those schools cannot be
+# monitored under this architecture, and the answer is to leave them disabled,
+# not to sign in. The monitor holds no school credentials, ever.
+
+id: example-peoplesoft-university
+name: Example PeopleSoft University
+sis: peoplesoft
+
+# The portal root only. Everything after it comes from scriptPath below.
+baseUrl: https://sis.example.edu
+
+peoplesoft:
+  # Everything up to and including /s/, copied verbatim from a working class
+  # search URL. Do not compose it from parts: the site segment (exprd here) and
+  # the node segment (SA here) vary per install, and at one school they vary
+  # between load balancer members of the same install.
+  #
+  # It must be the /psc/ form. The /psp/ form is the portal servlet, which
+  # wraps the same content in a page that redirects to sign in, and which
+  # therefore answers with HTML and a 200 rather than an error. Config loading
+  # rejects /psp/ for that reason.
+  scriptPath: /psc/exprd/EMPLOYEE/SA/s/
+
+  # PeopleSoft calls this the business unit. It is what separates colleges that
+  # share one host, so it matters more than the hostname does: Washington's
+  # ctcLink serves dozens of colleges from one address, distinguished only here.
+  institution: EX001
+
+  # Term codes are institution defined and cannot be computed. Two schools on
+  # this same vendor encode the same semester differently, so a formula that
+  # works at one silently polls the wrong term at the other. Read the codes off
+  # the class search URL and write them down.
+  #
+  # Quote them. Unquoted YAML reads 1252 as a number.
+  terms:
+    - code: "1252"
+      description: Spring 2025
+
+# Leave empty to discover every subject from the catalog. Listing them
+# explicitly is the polite default: poll what students actually watch.
+subjects:
+  - MATH
+  - CS
+
+polling:
+  # Steady-state gap between polls of one subject.
+  baseIntervalMs: 300000 # 5 min
+  # Floor. Values under 30s are rejected at load time.
+  minIntervalMs: 60000 # 1 min
+  # Ceiling for subjects where nothing has moved in a long time.
+  maxIntervalMs: 1800000 # 30 min
+  # A subject that changed within this window counts as hot.
+  hotWindowMs: 900000 # 15 min
+  # Politeness. The one install we have a report from answers an impolite
+  # caller with a hang rather than a 429, so these bounds are the whole defence.
+  maxConcurrentRequests: 2
+  minRequestGapMs: 350
+
+# Flip to true once the checks above pass. This adapter has never run against a
+# live install, so the first school to set this is doing Phase 0 verification.
+enabled: false

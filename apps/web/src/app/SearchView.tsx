@@ -56,7 +56,7 @@ export default function SearchView({
       <header className="mb-7">
         <h1 className="text-2xl font-bold tracking-[-0.02em]">Find classes</h1>
         <p className="mt-1.5 text-sm text-muted">
-          Seat counts from your school’s public schedule. No login needed to watch a section.
+          Seat counts from your school’s public schedule. Your school login is never involved.
         </p>
       </header>
 

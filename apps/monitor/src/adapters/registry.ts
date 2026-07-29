@@ -1,4 +1,5 @@
 import { BannerAdapter } from './banner.js'
+import { PeopleSoftAdapter } from './peoplesoft.js'
 import { PoliteClient } from './http.js'
 import type { SchoolConfig, SisAdapter, SisId } from './types.js'
 
@@ -10,8 +11,9 @@ import type { SchoolConfig, SisAdapter, SisId } from './types.js'
 export function buildAdapters(client = new PoliteClient()): Map<SisId, SisAdapter> {
   const map = new Map<SisId, SisAdapter>()
   map.set('banner9', new BannerAdapter(client))
-  // peoplesoft and workday land here as they are built. The poller does not
-  // change when they do; it looks adapters up by school.sis.
+  map.set('peoplesoft', new PeopleSoftAdapter(client))
+  // workday lands here as it is built. The poller does not change when it does;
+  // it looks adapters up by school.sis.
   return map
 }
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   ConsoleTransport,
   Dispatcher,
+  PermanentDeliveryError,
   renderMessage,
   WebhookTransport,
   type NotificationPayload,
@@ -26,6 +27,16 @@ class FailingTransport implements Transport {
   async send(): Promise<void> {
     this.attempts++
     if (this.attempts <= this.failTimes) throw new Error(`attempt ${this.attempts} failed`)
+  }
+}
+
+class RefusingTransport implements Transport {
+  readonly channel = 'console'
+  attempts = 0
+  constructor(private readonly reason = 'not a usable email address: bogus') {}
+  async send(): Promise<void> {
+    this.attempts++
+    throw new PermanentDeliveryError(this.reason)
   }
 }
 
@@ -210,6 +221,54 @@ describe('Dispatcher', () => {
     expect(result.delivered).toBe(2)
     expect(consoleT.sent).toHaveLength(1)
     expect(webhookCalls).toBe(1)
+  })
+
+  it('stops immediately on a permanent rejection instead of climbing the retry ladder', async () => {
+    queue()
+    const transport = new RefusingTransport()
+    const d = new Dispatcher(env.repo, [transport], {
+      now: () => env.clock.now, baseRetryMs: 1, maxAttempts: 5,
+    })
+
+    const result = await d.flush()
+    expect(result.failed).toBe(1)
+    expect(result.retrying).toBe(0)
+
+    env.clock.now += 1_000_000
+    expect(await d.flush()).toMatchObject({ delivered: 0, retrying: 0, failed: 0 })
+    expect(transport.attempts).toBe(1)
+  })
+
+  it('keeps the reason for a permanent rejection, which is the point of not retrying it', async () => {
+    queue()
+    const d = new Dispatcher(env.repo, [new RefusingTransport('550 no such mailbox')], {
+      now: () => env.clock.now,
+    })
+    await d.flush()
+
+    const row = env.repo.getNotification(1)!
+    expect(row.status).toBe('failed')
+    expect(row.attempts).toBe(1)
+    expect(row.last_error).toContain('550 no such mailbox')
+  })
+
+  it('still retries an ordinary failure, so one permanent case does not make everything permanent', async () => {
+    queue()
+    const d = new Dispatcher(env.repo, [new FailingTransport(1)], {
+      now: () => env.clock.now, baseRetryMs: 1,
+    })
+    expect((await d.flush()).retrying).toBe(1)
+    env.clock.now += 10
+    expect((await d.flush()).delivered).toBe(1)
+  })
+
+  it('reports the channels it can actually deliver, so the API can refuse the rest', async () => {
+    const d = new Dispatcher(env.repo, [new ConsoleTransport(() => {}), new WebhookTransport()], {
+      now: () => env.clock.now,
+    })
+    expect(d.channels).toEqual(['console', 'webhook'])
+    expect(d.supports('console')).toBe(true)
+    expect(d.supports('email')).toBe(false)
   })
 
   it('supports registering a transport after construction', async () => {

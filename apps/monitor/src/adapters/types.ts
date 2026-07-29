@@ -40,6 +40,28 @@ export interface RawSection {
   waitlistAvailable: number
 }
 
+/**
+ * The per-install variation a PeopleSoft (HighPoint CX) school needs.
+ *
+ * Almost everything that differs between these installs sits in the URL prefix
+ * and the institution code, which is what makes one adapter viable at all. What
+ * does not vary is the /psc/ servlet, the EMPLOYEE portal segment and the
+ * script names, so those live in the adapter rather than here.
+ */
+export interface PeopleSoftConfig {
+  /**
+   * Everything up to and including the /s/ segment, copied verbatim from a
+   * working class search URL. Not composed from parts: the site and node
+   * segments vary per install and, at one school seen, per load balancer
+   * member.
+   */
+  scriptPath: string
+  /** PeopleSoft's business unit. One shared host can serve many colleges, and this is what separates them. */
+  institution: string
+  /** Institution-defined term codes. Configured, never derived: see PeopleSoftAdapter.listTerms. */
+  terms: Term[]
+}
+
 export interface SchoolConfig {
   id: string
   name: string
@@ -47,6 +69,8 @@ export interface SchoolConfig {
   baseUrl: string
   /** Some Banner installs mount the app somewhere other than the default. */
   registrationPath?: string
+  /** Required when sis is peoplesoft, rejected otherwise. */
+  peoplesoft?: PeopleSoftConfig
   polling: {
     baseIntervalMs: number
     minIntervalMs: number

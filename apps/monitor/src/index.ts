@@ -8,7 +8,8 @@ import { loadSchoolsFromDir, parseSchoolConfig } from './config/schools.js'
 import { migrate, openDb } from './core/db.js'
 import { Repo } from './core/repo.js'
 import { Poller, Runner } from './core/poller.js'
-import { ConsoleTransport, Dispatcher, WebhookTransport } from './core/notify.js'
+import { ConsoleTransport, Dispatcher, WebhookTransport, type Transport } from './core/notify.js'
+import { emailFromEnv } from './config/email.js'
 import { createApi } from './api/server.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -77,7 +78,18 @@ export async function start(opts: StartOptions = {}) {
     }
   }
 
-  const dispatcher = new Dispatcher(repo, [new ConsoleTransport(), new WebhookTransport()])
+  const transports: Transport[] = [new ConsoleTransport(), new WebhookTransport()]
+  const email = emailFromEnv()
+  if (email) {
+    transports.push(email.transport)
+    log('email transport ready', { provider: email.provider, detail: email.detail })
+  } else {
+    log('email is not configured, that channel is not offered', {
+      hint: 'set CLASSPIK_EMAIL_PROVIDER to resend or smtp',
+    })
+  }
+
+  const dispatcher = new Dispatcher(repo, transports)
   const poller = new Poller(repo, adapters, dispatcher, { log })
   const runner = new Runner(poller, dispatcher, {
     tickIntervalMs: opts.tickIntervalMs ?? 15_000,

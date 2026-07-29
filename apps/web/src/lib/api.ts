@@ -80,12 +80,59 @@ export interface Stats {
   pendingNotifications: number
 }
 
+export interface User {
+  id: string
+  email: string
+  createdAt: number
+}
+
+export interface Session {
+  token: string
+  expiresAt: number
+  user: User
+}
+
+const TOKEN_KEY = 'classpik.token'
+
+/**
+ * Held in memory as well as localStorage so a call made before the first render
+ * still carries the header, and so a private-mode browser that refuses storage
+ * degrades to a session that ends with the tab rather than not working at all.
+ */
+let token: string | null = readStoredToken()
+
+function readStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
+export function getToken(): string | null {
+  return token
+}
+
+export function setToken(next: string | null): void {
+  token = next
+  try {
+    if (next === null) localStorage.removeItem(TOKEN_KEY)
+    else localStorage.setItem(TOKEN_KEY, next)
+  } catch {
+    /* storage blocked; the in-memory copy still works for this tab */
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
+        ...(init?.headers ?? {}),
+      },
     })
   } catch {
     // A network-level failure here almost always means the monitor is not
@@ -101,6 +148,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* response was not JSON; the status alone will do */
     }
+    // A stale or revoked token is worth clearing here rather than letting every
+    // subsequent call fail the same way while the UI still looks signed in.
+    if (res.status === 401) setToken(null)
     throw new ApiError(detail, res.status)
   }
 
@@ -109,6 +159,16 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => call<{ ok: boolean }>('/health'),
+
+  signup: (email: string, password: string) =>
+    call<Session>('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email, password }) }),
+
+  login: (email: string, password: string) =>
+    call<Session>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+
+  logout: () => call<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  me: () => call<{ user: User }>('/api/auth/me'),
 
   stats: () => call<Stats>('/api/stats'),
 
@@ -121,11 +181,11 @@ export const api = {
     return call<{ count: number; sections: Section[] }>(`/api/sections?${qs}`)
   },
 
-  watches: (userId: string) =>
-    call<{ watches: Watch[] }>(`/api/watches?userId=${encodeURIComponent(userId)}`),
+  // No userId on any of these: the monitor takes the account from the session,
+  // so a client that passed one would only be guessing at its own identity.
+  watches: () => call<{ watches: Watch[] }>('/api/watches'),
 
   createWatch: (input: {
-    userId: string
     sectionId: string
     mode?: 'notify' | 'claim'
     channel?: string
@@ -135,10 +195,7 @@ export const api = {
   deleteWatch: (id: string) =>
     call<{ ok: boolean }>(`/api/watches/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-  events: (userId: string, limit = 50) =>
-    call<{ events: EventItem[] }>(
-      `/api/events?userId=${encodeURIComponent(userId)}&limit=${limit}`
-    ),
+  events: (limit = 50) => call<{ events: EventItem[] }>(`/api/events?limit=${limit}`),
 
   poll: () => call<{ polled: number; notificationsQueued: number }>('/api/poll', { method: 'POST' }),
 }

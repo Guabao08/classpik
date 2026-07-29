@@ -36,6 +36,54 @@ describe('migrations', () => {
     db.close()
   })
 
+  it('upgrades a database that already has data in it', () => {
+    // The path a deployed instance actually takes. A fresh-database test would
+    // never catch a migration that only works on an empty schema.
+    const db = openDb(':memory:')
+    migrate(db)
+    db.prepare(
+      'INSERT INTO schools (id,name,sis,base_url,enabled,config_json,created_at) VALUES (?,?,?,?,?,?,?)'
+    ).run('s1', 'S', 'banner9', 'https://s.invalid', 1, '{}', 0)
+
+    // Rewind the recorded version so the accounts migration runs again over
+    // populated tables, as it would on an instance that predates it.
+    db.exec('DROP TABLE users')
+    db.exec('DROP TABLE sessions')
+    db.prepare('UPDATE schema_version SET version = ?').run(1)
+
+    const result = migrate(db)
+    expect(result.from).toBe(1)
+    expect(result.applied).toEqual(['accounts'])
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schools').get()).toEqual({ n: 1 })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM users').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('cascades sessions away when their account is deleted', () => {
+    const db = openDb(':memory:')
+    migrate(db)
+    db.prepare(
+      'INSERT INTO users (id,email,email_norm,password_hash,created_at) VALUES (?,?,?,?,?)'
+    ).run('u1', 'a@b.co', 'a@b.co', 'x', 0)
+    db.prepare(
+      'INSERT INTO sessions (token_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)'
+    ).run('h1', 'u1', 0, 1)
+    db.prepare('DELETE FROM users WHERE id = ?').run('u1')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('refuses two accounts for the same normalised email', () => {
+    const db = openDb(':memory:')
+    migrate(db)
+    const ins = db.prepare(
+      'INSERT INTO users (id,email,email_norm,password_hash,created_at) VALUES (?,?,?,?,?)'
+    )
+    ins.run('u1', 'Ada@B.co', 'ada@b.co', 'x', 0)
+    expect(() => ins.run('u2', 'ada@b.co', 'ada@b.co', 'y', 0)).toThrow()
+    db.close()
+  })
+
   it('enforces foreign keys', () => {
     const db = openDb(':memory:')
     migrate(db)

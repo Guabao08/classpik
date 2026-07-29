@@ -1,4 +1,4 @@
-# Phase 0 captures contain live session cookies — never commit
+# Phase 0 captures contain live session cookies, never commit
 notes/
 *.curl
 *.har
