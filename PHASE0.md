@@ -91,24 +91,47 @@ The actual experiment. When your time ticket is active:
 
 ---
 
-## Part B: Is the catalog really public?
+## Part B: Is the catalog really public? ANSWERED, YES
 
-This validates the entire credential-free monitoring half, which is what Phase 1 ships.
+**Done 2026-07-29 against the live install. Nobody needs to repeat this.**
 
-1. Open an **incognito window.** Do not log in.
-2. Reach GT's class schedule search from `oscar.gatech.edu` (the schedule-of-classes browse, not the registration app).
-3. Search for a real course.
-4. Confirm you can see **seat numbers**: capacity, actual enrolled, remaining. Waitlist counts too if they're shown.
-5. DevTools → Network → capture the search request → **Copy as cURL** → run it from the terminal with no cookies at all.
+This was the question the entire credential-free monitoring half rested on, and
+it was left as homework for too long when it was always a public URL anyone
+could just fetch.
 
-**Does it return seat data with no session?** If yes, Phase 1 is unblocked and we can monitor GT, and every other Banner school, without ever touching a credential.
+**First correction: the host is wrong everywhere else in this repo.** The Banner
+9 registration app is at `registration.banner.gatech.edu`, not
+`oscar.gatech.edu`. OSCAR still serves the old Banner 8 self-service pages, but
+every `StudentRegistrationSsb` path on that host 404s.
 
-Record in `notes/phase0-gatech.md`:
+The exact handshake the Banner adapter performs, run with no login and no
+cookies beyond what the server volunteers:
 
-- [ ] Seat counts visible logged-out? (y/n)
-- [ ] Is it HTML to parse, or JSON?
-- [ ] Can one request return **many sections at once** (a whole subject, e.g. all of CS)? This matters: the monitor batches per school, so one request covering 200 sections is the difference between cheap and expensive.
-- [ ] Any rate limiting or blocking after ~20 requests? Go gently here; back off the moment anything looks throttled.
+| Step | Result |
+|---|---|
+| `GET /StudentRegistrationSsb/ssb/classSearch/classSearch` | 302, sets `JSESSIONID`. No credentials requested. |
+| `GET .../classSearch/getTerms?offset=1&max=8` | 200 JSON. Fall 2026 is `202608`. |
+| `POST .../term/search?mode=search` with `term=202608` | 200, `{"fwdURL": "/StudentRegistrationSsb/ssb/classSearch/classSearch"}` |
+| `GET .../searchResults/searchResults?txt_subject=CS&txt_term=202608` | 200, `success: true`, `totalCount: 1751` |
+
+Real rows returned, seat counts included:
+
+```
+CS 1100-A1  CRN 85090  seats 8/182   enrolled=174  wait 0/0
+CS 1100-A2  CRN 91247  seats 13/182  enrolled=169  wait 0/0
+CS 1100-A3  CRN 85955  seats 11/186  enrolled=175  wait 0/0
+```
+
+Answers to the original checklist:
+
+- [x] **Seat counts visible logged out?** Yes. `seatsAvailable`, `maximumEnrollment`, `enrollment`, `waitCount`, `waitCapacity`, `waitAvailable` on every row.
+- [x] **HTML or JSON?** JSON, and it matches the shape the adapter already maps.
+- [x] **Many sections per request?** Yes. 1751 CS sections for Fall 2026, paged at 500. The one-request-per-subject economics the whole design rests on is real.
+- [x] **Rate limiting?** Nothing observed across roughly eight requests. That is far too small a sample to call it safe, so the polite defaults stay exactly as they are.
+
+Verified config is committed at `apps/monitor/schools/gatech.yaml`, `enabled: false`.
+Everything in it was read off live responses. Flipping that one flag starts real
+polling of Georgia Tech.
 
 ---
 

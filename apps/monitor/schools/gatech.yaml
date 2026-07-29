@@ -1,0 +1,47 @@
+# Georgia Institute of Technology
+#
+# VERIFIED LIVE on 2026-07-29 against the real install, with no login and no
+# cookies beyond the session the server hands out on its own. Every value below
+# was read off actual responses, not inferred:
+#
+#   GET  /StudentRegistrationSsb/ssb/classSearch/classSearch
+#        302, sets JSESSIONID. No credentials asked for.
+#   GET  /StudentRegistrationSsb/ssb/classSearch/getTerms?offset=1&max=8
+#        200, JSON. Fall 2026 is 202608.
+#   POST /StudentRegistrationSsb/ssb/term/search?mode=search   term=202608
+#        200, {"fwdURL": "/StudentRegistrationSsb/ssb/classSearch/classSearch"}
+#   GET  /StudentRegistrationSsb/ssb/searchResults/searchResults?txt_subject=CS&txt_term=202608
+#        200, success=true, totalCount=1751, with seatsAvailable,
+#        maximumEnrollment, enrollment, waitCount, waitCapacity, waitAvailable
+#        present on every row.
+#
+# Note the host: NOT oscar.gatech.edu. OSCAR still serves the old Banner 8
+# self-service pages, but the Banner 9 registration app that carries the JSON
+# class search lives on its own hostname. Pointing at oscar returns 404 for
+# every StudentRegistrationSsb path.
+
+id: gatech
+name: Georgia Institute of Technology
+sis: banner9
+baseUrl: https://registration.banner.gatech.edu
+
+# One request returns every section for a subject, so this list is the whole
+# polling cost. CS alone had 1751 sections in Fall 2026, which pages at 500 per
+# request. Keep this to subjects students actually watch.
+subjects:
+  - CS
+  - MATH
+
+polling:
+  baseIntervalMs: 300000 # 5 min
+  minIntervalMs: 60000 # 1 min, used right after a change
+  maxIntervalMs: 1800000 # 30 min for subjects where nothing moves
+  hotWindowMs: 900000 # 15 min
+  maxConcurrentRequests: 2
+  minRequestGapMs: 500
+
+# Deliberately off. Everything above is confirmed working, so this is one line
+# away from live. It stays off until Roshan says go, because flipping it starts
+# continuous automated traffic against his own university, and that is his call
+# to make rather than a side effect of a config file landing in a commit.
+enabled: false
