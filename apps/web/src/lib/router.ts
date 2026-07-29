@@ -45,15 +45,18 @@ export function navigate(to: string, options: { replace?: boolean } = {}): void 
 }
 
 /**
- * Only same-site absolute paths survive. `?next=` is attacker-writable, and a
- * value like `//evil.example` is a path to the browser but another origin once
- * it reaches the address bar, which would turn our sign-in into a redirector.
- * A backslash is refused for the same reason: browsers fold `/\` into `//`.
+ * A path on this site and nothing else. `//evil.example` is a path to the
+ * browser and another origin once it reaches the address bar, and `/\` is
+ * folded into the same thing, so both are refused. It matters because hrefs and
+ * `?next=` values are the two inputs here that a stranger can write.
  */
+function isInternalPath(raw: string | null): raw is string {
+  return raw !== null && raw[0] === '/' && raw[1] !== '/' && raw[1] !== '\\'
+}
+
+/** The same check, for a `?next=` that has to end up somewhere either way. */
 export function safePath(raw: string | null, fallback: string): string {
-  if (raw === null || raw[0] !== '/') return fallback
-  if (raw[1] === '/' || raw[1] === '\\') return fallback
-  return raw
+  return isInternalPath(raw) ? raw : fallback
 }
 
 // Anchors keep being anchors. A middle click, a modifier click or target=_blank
@@ -68,7 +71,7 @@ window.addEventListener('click', (e) => {
   if (anchor === null) return
   const href = anchor.getAttribute('href')
   if (href === null || anchor.target === '_blank') return
-  if (safePath(href, '') === '') return
+  if (!isInternalPath(href)) return
   e.preventDefault()
   navigate(href)
 })
