@@ -1,5 +1,5 @@
 import Reveal from '../components/Reveal'
-import { SchoolTag, SeatBar, SectionLabel, StatusPill } from '../components/ui'
+import { SeatBar, SectionLabel, StatusPill } from '../components/ui'
 import { watches } from '../data/mock'
 
 export default function Watchlist() {
@@ -31,11 +31,11 @@ export default function Watchlist() {
             className="grid grid-cols-2 items-center gap-4 border-b border-line px-6 py-4 transition last:border-0 hover:bg-white/2 md:grid-cols-[1.6fr_0.7fr_1fr_0.8fr_0.7fr]"
           >
             <div className="col-span-2 min-w-0 md:col-span-1">
-              <div className="flex items-center gap-2">
+              <div className="flex items-baseline gap-2">
                 <span className="text-sm font-semibold">
                   {w.code} <span className="text-muted">· {w.section}</span>
                 </span>
-                <SchoolTag school={w.school} />
+                <span className="num text-[11px] text-muted">watching {w.watchingSince}</span>
               </div>
               <div className="mt-0.5 truncate text-xs text-muted">{w.title}</div>
             </div>

@@ -28,7 +28,7 @@ export default function Hero() {
       <div className="relative mx-auto max-w-4xl px-6 pb-20 pt-24 text-center">
         <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-line bg-white/4 px-3.5 py-1.5 text-xs">
           <span className="h-1.5 w-1.5 rounded-full bg-open dot-open" />
-          <ShinyText text="Watching 12,480 sections across 2 schools" speed={4} className="text-muted" />
+          <ShinyText text="Now watching 12,480 sections" speed={4} className="text-muted" />
         </div>
 
         <SplitText

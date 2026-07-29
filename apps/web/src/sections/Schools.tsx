@@ -2,9 +2,9 @@ import Reveal from '../components/Reveal'
 import { SectionLabel } from '../components/ui'
 
 const schools = [
-  { name: 'Georgia Tech', sis: 'Banner 9 · OSCAR', state: 'live' },
-  { name: 'Duke', sis: 'PeopleSoft · DukeHub', state: 'live' },
-  { name: 'Your school', sis: 'Banner · PeopleSoft · Workday', state: 'soon' },
+  { name: 'Banner', sis: 'Ellucian · most large publics', state: 'live' },
+  { name: 'PeopleSoft', sis: 'Oracle Campus Solutions', state: 'live' },
+  { name: 'Workday Student', sis: 'Newer adoptions', state: 'soon' },
 ]
 
 export default function Schools() {
@@ -19,8 +19,8 @@ export default function Schools() {
             </h2>
             <p className="mt-4 text-[15px] leading-relaxed text-muted">
               Nearly every university runs one of three student systems. We build the adapter once,
-              then each new campus is a config file, not a rewrite. Adding your school takes days,
-              not months.
+              then each new campus is a config file, not a rewrite. Tell us where you go and we
+              will add it.
             </p>
             <a
               href="#waitlist"
@@ -42,7 +42,7 @@ export default function Schools() {
                 </div>
                 {s.state === 'live' ? (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-open/12 px-2.5 py-1 text-[11px] font-semibold text-open">
-                    <span className="h-1.5 w-1.5 rounded-full bg-open dot-open" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-open" />
                     Live
                   </span>
                 ) : (

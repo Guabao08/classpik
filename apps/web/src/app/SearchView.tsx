@@ -1,47 +1,62 @@
-import { useMemo, useState } from 'react'
-import { catalog, statusOf, type CatalogSection } from '../data/catalog'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { api, ApiError, type Section, type Watch } from '../lib/api'
 import { SeatBar, StatusPill } from '../components/ui'
-import type { Mode } from './AppShell'
 
 const FILTERS = [
-  { id: 'all', label: 'All sections' },
+  { id: '', label: 'All sections' },
   { id: 'open', label: 'Open now' },
-  { id: 'watchable', label: 'Full or waitlisted' },
+  { id: 'waitlist', label: 'Waitlist open' },
+  { id: 'full', label: 'Full' },
 ] as const
 
 export default function SearchView({
   watched,
   onToggle,
 }: {
-  watched: Record<string, Mode>
-  onToggle: (crn: string) => void
+  watched: Map<string, Watch>
+  onToggle: (sectionId: string) => void
 }) {
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]['id']>('all')
+  const [status, setStatus] = useState<string>('')
+  const [sections, setSections] = useState<Section[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [pending, setPending] = useState<string | null>(null)
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase().replace(/\s+/g, '')
-    let out: CatalogSection[] = catalog
-    if (q) {
-      out = out.filter(
-        (s) =>
-          s.code.toLowerCase().replace(/\s+/g, '').includes(q) ||
-          s.title.toLowerCase().includes(query.trim().toLowerCase()) ||
-          s.crn.includes(q) ||
-          s.instructor.toLowerCase().includes(query.trim().toLowerCase())
-      )
-    }
-    if (filter === 'open') out = out.filter((s) => s.seats > 0)
-    if (filter === 'watchable') out = out.filter((s) => s.seats === 0)
-    return out
-  }, [query, filter])
+  // Debounced so typing "MATH 221" is one request, not eight.
+  const debounced = useDebounced(query, 250)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    api
+      .sections({ q: debounced || undefined, status: status || undefined })
+      .then((res) => {
+        if (cancelled) return
+        setSections(res.sections)
+        setError(null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(err instanceof ApiError ? err.message : 'Search failed')
+        setSections([])
+      })
+      .finally(() => !cancelled && setLoading(false))
+    return () => { cancelled = true }
+  }, [debounced, status])
+
+  const handleToggle = async (id: string) => {
+    setPending(id)
+    await onToggle(id)
+    setPending(null)
+  }
 
   return (
     <div className="px-9 py-8">
       <header className="mb-7">
         <h1 className="text-2xl font-bold tracking-[-0.02em]">Find classes</h1>
         <p className="mt-1.5 text-sm text-muted">
-          Live seat counts from the OSCAR schedule of classes. No login needed to watch.
+          Seat counts from your school’s public schedule. No login needed to watch a section.
         </p>
       </header>
 
@@ -65,9 +80,9 @@ export default function SearchView({
           {FILTERS.map((f) => (
             <button
               key={f.id}
-              onClick={() => setFilter(f.id)}
+              onClick={() => setStatus(f.id)}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                filter === f.id ? 'bg-white/10 text-bright' : 'text-muted hover:text-bright'
+                status === f.id ? 'bg-white/10 text-bright' : 'text-muted hover:text-bright'
               }`}
             >
               {f.label}
@@ -78,9 +93,8 @@ export default function SearchView({
 
       <div className="mb-3 flex items-baseline justify-between">
         <span className="num text-xs text-muted">
-          {results.length} section{results.length === 1 ? '' : 's'}
+          {loading ? 'searching…' : `${sections.length} section${sections.length === 1 ? '' : 's'}`}
         </span>
-        <span className="num text-xs text-muted">Updated 8s ago</span>
       </div>
 
       <div className="panel overflow-hidden">
@@ -92,19 +106,27 @@ export default function SearchView({
           <span />
         </div>
 
-        {results.length === 0 ? (
+        {error ? (
           <div className="px-5 py-14 text-center">
-            <p className="text-sm font-medium">No sections match “{query}”.</p>
+            <p className="text-sm font-medium text-full">{error}</p>
+          </div>
+        ) : sections.length === 0 && !loading ? (
+          <div className="px-5 py-14 text-center">
+            <p className="text-sm font-medium">
+              {query ? `No sections match “${query}”.` : 'No sections indexed yet.'}
+            </p>
             <p className="mt-1.5 text-xs text-muted">
-              Try a course code like CS 1332, or clear the filter.
+              {query
+                ? 'Try a course code like MATH 221, or clear the filter.'
+                : 'The monitor seeds sections on its first poll. Give it a moment.'}
             </p>
           </div>
         ) : (
-          results.map((s) => {
-            const isWatched = Boolean(watched[s.crn])
+          sections.map((s) => {
+            const isWatched = watched.has(s.id)
             return (
               <div
-                key={s.crn}
+                key={s.id}
                 className="grid grid-cols-[1.7fr_0.9fr_1fr_0.85fr_auto] items-center gap-4 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2"
               >
                 <div className="min-w-0">
@@ -115,12 +137,13 @@ export default function SearchView({
                     <span className="num text-[11px] text-muted">{s.crn}</span>
                   </div>
                   <div className="mt-0.5 truncate text-xs text-muted">
-                    {s.title} · {s.instructor}
+                    {s.title}
+                    {s.instructor ? ` · ${s.instructor}` : ''}
                   </div>
                 </div>
 
                 <div className="num text-xs text-muted">
-                  {s.days} {s.time}
+                  {s.meetingDays ?? '—'} {s.meetingTime ?? ''}
                 </div>
 
                 <div>
@@ -133,18 +156,19 @@ export default function SearchView({
                 </div>
 
                 <div>
-                  <StatusPill status={statusOf(s)} />
+                  <StatusPill status={s.status} />
                 </div>
 
                 <button
-                  onClick={() => onToggle(s.crn)}
-                  className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                  onClick={() => void handleToggle(s.id)}
+                  disabled={pending === s.id}
+                  className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
                     isWatched
                       ? 'border border-open/30 bg-open/12 text-open'
                       : 'border border-line text-muted hover:border-white/25 hover:text-bright'
                   }`}
                 >
-                  {isWatched ? 'Watching' : 'Watch'}
+                  {pending === s.id ? '…' : isWatched ? 'Watching' : 'Watch'}
                 </button>
               </div>
             )
@@ -153,4 +177,15 @@ export default function SearchView({
       </div>
     </div>
   )
+}
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => setDebounced(value), ms)
+    return () => { if (timer.current) clearTimeout(timer.current) }
+  }, [value, ms])
+  return useMemo(() => debounced, [debounced])
 }

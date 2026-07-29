@@ -29,18 +29,8 @@ export function StatusPill({ status }: { status: Status }) {
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusStyles[status]}`}
     >
-      <span
-        className={`h-1.5 w-1.5 rounded-full bg-current ${status === 'open' ? 'dot-open' : ''}`}
-      />
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
       {statusLabel[status]}
-    </span>
-  )
-}
-
-export function SchoolTag({ school }: { school: 'GT' | 'DUKE' }) {
-  return (
-    <span className="rounded border border-line px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-muted">
-      {school}
     </span>
   )
 }

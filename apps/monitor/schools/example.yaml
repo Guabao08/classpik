@@ -1,0 +1,39 @@
+# Adding a school is this file, not code.
+#
+# Before enabling one, confirm two things by hand:
+#   1. the public class search shows seat counts with no login
+#   2. the school's terms of use do not prohibit automated reads
+# See PHASE0.md in the repo root for how to check the first.
+
+id: example-university
+name: Example University
+sis: banner9
+
+# The portal root. The adapter appends /StudentRegistrationSsb/ssb itself.
+baseUrl: https://banner.example.edu
+
+# Override only if this install mounts self-service somewhere non-standard.
+# registrationPath: /StudentRegistrationSsb/ssb
+
+# Leave empty to discover every subject from the SIS. Listing them explicitly
+# is the polite default: poll what students actually watch, not the catalog.
+subjects:
+  - MATH
+  - CS
+
+polling:
+  # Steady-state gap between polls of one subject.
+  baseIntervalMs: 300000 # 5 min
+  # Floor. Used when a subject just changed, so we catch the next drop fast.
+  # Values under 30s are rejected at load time.
+  minIntervalMs: 60000 # 1 min
+  # Ceiling for subjects where nothing has moved in a long time.
+  maxIntervalMs: 1800000 # 30 min
+  # A subject that changed within this window counts as hot.
+  hotWindowMs: 900000 # 15 min
+  # Politeness. These bound our footprint on the registrar's server.
+  maxConcurrentRequests: 2
+  minRequestGapMs: 350
+
+# Flip to true once the checks above pass.
+enabled: false

@@ -1,0 +1,29 @@
+{
+  "name": "@classpik/monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Credential-free course seat monitor. Polls public course catalogs, detects seat openings, notifies watchers.",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node --experimental-sqlite --disable-warning=ExperimentalWarning src/index.js",
+    "dev": "tsx watch src/index.ts",
+    "serve": "tsx src/index.ts",
+    "cli": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  }
+}

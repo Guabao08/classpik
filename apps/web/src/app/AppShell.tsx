@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Logo } from '../components/ui'
 import SearchView from './SearchView'
 import WatchlistView from './WatchlistView'
 import AlertsView from './AlertsView'
-import { alerts } from '../data/catalog'
+import { api, ApiError, API_BASE, type EventItem, type Stats, type Watch } from '../lib/api'
 
 export type View = 'search' | 'watchlist' | 'alerts'
-export type Mode = 'notify' | 'auto'
+export type Mode = 'notify' | 'claim'
+
+/** No auth yet, so the monitor takes this at face value. See the README. */
+const USER_ID = 'roshan'
 
 const nav: { id: View; label: string; icon: React.ReactNode }[] = [
   {
@@ -22,16 +25,7 @@ const nav: { id: View; label: string; icon: React.ReactNode }[] = [
   {
     id: 'watchlist',
     label: 'Watchlist',
-    icon: (
-      <>
-        <path
-          d="M4 6h16M4 12h16M4 18h10"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-        />
-      </>
-    ),
+    icon: <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />,
   },
   {
     id: 'alerts',
@@ -40,9 +34,7 @@ const nav: { id: View; label: string; icon: React.ReactNode }[] = [
       <>
         <path
           d="M12 3a6 6 0 0 0-6 6v4l-1.5 3h15L18 13V9a6 6 0 0 0-6-6Z"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinejoin="round"
+          stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"
         />
         <path d="M10 19a2 2 0 0 0 4 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       </>
@@ -52,27 +44,65 @@ const nav: { id: View; label: string; icon: React.ReactNode }[] = [
 
 export default function AppShell() {
   const [view, setView] = useState<View>('search')
-  // CRN -> mode. This is the whole app state for now.
-  const [watched, setWatched] = useState<Record<string, Mode>>({
-    '30412': 'auto',
-    '91744': 'auto',
-    '86022': 'notify',
-    '30655': 'auto',
-  })
+  const [watches, setWatches] = useState<Watch[]>([])
+  const [events, setEvents] = useState<EventItem[]>([])
+  const [stats, setStats] = useState<Stats | null>(null)
+  const [offline, setOffline] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  const toggleWatch = (crn: string) =>
-    setWatched((w) => {
-      if (w[crn]) {
-        const next = { ...w }
-        delete next[crn]
-        return next
+  const refresh = useCallback(async () => {
+    try {
+      const [w, e, s] = await Promise.all([
+        api.watches(USER_ID),
+        api.events(USER_ID),
+        api.stats(),
+      ])
+      setWatches(w.watches)
+      setEvents(e.events)
+      setStats(s)
+      setOffline(null)
+    } catch (err) {
+      setOffline(err instanceof ApiError ? err.message : 'Something went wrong')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    // The monitor polls on its own schedule, so the UI just re-reads
+    // periodically rather than trying to hold a socket open.
+    const timer = setInterval(() => void refresh(), 15_000)
+    return () => clearInterval(timer)
+  }, [refresh])
+
+  const watchedIds = new Map(watches.map((w) => [w.section.id, w]))
+
+  const toggleWatch = useCallback(
+    async (sectionId: string) => {
+      const existing = watches.find((w) => w.section.id === sectionId)
+      try {
+        if (existing) await api.deleteWatch(existing.id)
+        else await api.createWatch({ userId: USER_ID, sectionId })
+        await refresh()
+      } catch (err) {
+        setOffline(err instanceof ApiError ? err.message : 'Could not update the watch')
       }
-      return { ...w, [crn]: 'notify' }
-    })
+    },
+    [watches, refresh]
+  )
 
-  const setMode = (crn: string, mode: Mode) => setWatched((w) => ({ ...w, [crn]: mode }))
-
-  const watchCount = Object.keys(watched).length
+  const setMode = useCallback(
+    async (sectionId: string, mode: Mode) => {
+      try {
+        await api.createWatch({ userId: USER_ID, sectionId, mode })
+        await refresh()
+      } catch (err) {
+        setOffline(err instanceof ApiError ? err.message : 'Could not change the mode')
+      }
+    },
+    [refresh]
+  )
 
   return (
     <div className="flex min-h-screen bg-ink">
@@ -84,6 +114,8 @@ export default function AppShell() {
         <nav className="flex flex-col gap-1">
           {nav.map((n) => {
             const active = view === n.id
+            const badge =
+              n.id === 'watchlist' ? watches.length : n.id === 'alerts' ? events.length : 0
             return (
               <button
                 key={n.id}
@@ -98,14 +130,9 @@ export default function AppShell() {
                   {n.icon}
                 </svg>
                 {n.label}
-                {n.id === 'watchlist' && watchCount > 0 && (
+                {badge > 0 && (
                   <span className="num ml-auto rounded-full bg-white/8 px-1.5 py-0.5 text-[10px] text-muted">
-                    {watchCount}
-                  </span>
-                )}
-                {n.id === 'alerts' && (
-                  <span className="num ml-auto rounded-full bg-white/8 px-1.5 py-0.5 text-[10px] text-muted">
-                    {alerts.length}
+                    {badge}
                   </span>
                 )}
               </button>
@@ -116,29 +143,49 @@ export default function AppShell() {
         <div className="mt-auto space-y-3">
           <div className="rounded-xl border border-line bg-white/3 p-3.5">
             <div className="flex items-center gap-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-open dot-open" />
-              <span className="text-xs font-semibold">Agent online</span>
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${offline ? 'bg-full' : 'bg-open dot-open'}`}
+              />
+              <span className="text-xs font-semibold">
+                {offline ? 'Monitor offline' : 'Monitor online'}
+              </span>
             </div>
-            <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
-              Session valid for 26 days. Next wake 7:55 AM.
+            <p className="num mt-1.5 text-[11px] leading-relaxed text-muted">
+              {offline
+                ? API_BASE.replace(/^https?:\/\//, '')
+                : stats
+                  ? `${stats.sections} sections · ${stats.pollCount} checks`
+                  : 'connecting'}
             </p>
           </div>
-
-          <button className="w-full rounded-xl border border-line px-3.5 py-3 text-left transition-colors hover:border-white/20">
-            <div className="text-xs font-semibold">Georgia Tech</div>
-            <div className="mt-0.5 text-[11px] text-muted">Fall 2026 · OSCAR</div>
-          </button>
         </div>
       </aside>
 
       <main className="ml-[236px] flex-1">
-        {view === 'search' && (
-          <SearchView watched={watched} onToggle={toggleWatch} />
+        {offline && (
+          <div className="border-b border-full/25 bg-full/8 px-9 py-3.5">
+            <p className="text-sm font-semibold">{offline}</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              Start it with{' '}
+              <code className="num rounded bg-white/8 px-1.5 py-0.5">
+                npm run serve -- --demo
+              </code>{' '}
+              in apps/monitor.
+            </p>
+          </div>
         )}
-        {view === 'watchlist' && (
-          <WatchlistView watched={watched} onToggle={toggleWatch} onSetMode={setMode} />
+
+        {loading ? (
+          <div className="px-9 py-16 text-sm text-muted">Loading…</div>
+        ) : (
+          <>
+            {view === 'search' && <SearchView watched={watchedIds} onToggle={toggleWatch} />}
+            {view === 'watchlist' && (
+              <WatchlistView watches={watches} onToggle={toggleWatch} onSetMode={setMode} />
+            )}
+            {view === 'alerts' && <AlertsView events={events} />}
+          </>
         )}
-        {view === 'alerts' && <AlertsView />}
       </main>
     </div>
   )
