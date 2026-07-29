@@ -2,15 +2,19 @@ import Aurora from '../bits/Aurora'
 import SplitText from '../bits/SplitText'
 import ShinyText from '../bits/ShinyText'
 import StarBorder from '../bits/StarBorder'
-import CountUp from '../bits/CountUp'
 
-function Stat({ value, suffix, label }: { value: number; suffix?: string; label: string }) {
+/**
+ * Facts about the product, not operating metrics.
+ *
+ * This row used to animate counters reading "12,480 sections watched", "318ms
+ * median claim time" and "94% seats caught". None of those were measured, and
+ * the middle one measured a feature that does not exist. A visitor deciding
+ * whether to trust a seat alert should not be reading invented numbers.
+ */
+function Fact({ value, label }: { value: string; label: string }) {
   return (
     <div className="text-center">
-      <div className="num text-3xl font-semibold text-bright sm:text-4xl">
-        <CountUp to={value} duration={1.6} separator="," />
-        {suffix}
-      </div>
+      <div className="text-xl font-semibold text-bright sm:text-2xl">{value}</div>
       <div className="mt-1.5 text-xs text-muted">{label}</div>
     </div>
   )
@@ -28,7 +32,7 @@ export default function Hero() {
       <div className="relative mx-auto max-w-4xl px-6 pb-20 pt-24 text-center">
         <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-line bg-white/4 px-3.5 py-1.5 text-xs">
           <span className="h-1.5 w-1.5 rounded-full bg-open dot-open" />
-          <ShinyText text="Now watching 12,480 sections" speed={4} className="text-muted" />
+          <ShinyText text="Early access, no school login required" speed={4} className="text-muted" />
         </div>
 
         <SplitText
@@ -45,12 +49,16 @@ export default function Hero() {
         />
 
         <p className="mx-auto mt-6 max-w-xl text-[17px] leading-relaxed text-muted">
-          ClassPik watches your sections around the clock and claims a seat the moment one opens,
-          or the instant your registration window does. No 7 AM alarm. No refresh war.
+          ClassPik watches your sections around the clock and tells you the moment a seat opens, so
+          you can go and take it. No 7 AM alarm. No refresh war.
         </p>
 
         <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <StarBorder as="a" href="#waitlist" color="#c8ff4d" speed="4s" thickness={1.5}>
+          {/* The one button on the page that has to work. It points at signup
+              rather than at the app, because a visitor with no account reaching
+              a sign-in form is being asked to remember a password they never
+              set. */}
+          <StarBorder as="a" href="/signup" color="#c8ff4d" speed="4s" thickness={1.5}>
             <span className="text-sm font-semibold">Watch a class free</span>
           </StarBorder>
           <a
@@ -62,9 +70,9 @@ export default function Hero() {
         </div>
 
         <div className="mt-16 grid grid-cols-3 gap-4 border-t border-line pt-9">
-          <Stat value={12480} label="Sections watched" />
-          <Stat value={318} suffix="ms" label="Median claim time" />
-          <Stat value={94} suffix="%" label="Seats caught" />
+          <Fact value="Every 30s" label="Fastest check on a section that just moved" />
+          <Fact value="No login" label="Reads the public class search only" />
+          <Fact value="Email or in app" label="How an alert reaches you" />
         </div>
       </div>
     </section>

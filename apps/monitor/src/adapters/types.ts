@@ -31,6 +31,17 @@ export interface RawSection {
   meetingDays: string | null
   meetingTime: string | null
   campus: string | null
+  /**
+   * Academic level, in the registrar's own code: Banner's UG or GR, PeopleSoft's
+   * Academic Career of UGRD or GRAD, or whatever else an install uses. This is a
+   * property of the section rather than of the student, which is why it lives
+   * here and not only on an account.
+   *
+   * Null when the install does not report one. Absent is not "undergraduate":
+   * a section we could not classify is shown to everybody, since hiding a class
+   * because our mapping missed a field is the worse of the two failures.
+   */
+  level: string | null
 
   seats: number
   capacity: number

@@ -14,6 +14,12 @@ export default function Watchlist() {
           No animated backgrounds here on purpose. When you’re scanning seat counts under time
           pressure, the interface should get out of the way.
         </p>
+        {/* Said plainly, because these rows read exactly like live data and are
+            not. The real one is at /app, against the monitor. */}
+        <p className="mt-3 inline-flex items-center gap-2 rounded-full border border-line bg-white/4 px-3 py-1 text-[11px] text-muted">
+          <span className="h-1.5 w-1.5 rounded-full bg-wait" />
+          Example rows. Sign in to see your own.
+        </p>
       </Reveal>
 
       <Reveal className="panel overflow-hidden" delay={0.08}>
@@ -54,12 +60,14 @@ export default function Watchlist() {
             </div>
 
             <div className="text-right">
+              {/* Auto-claim needs the local agent, which is not built. Labelling
+                  a row with it here read as a shipped feature. */}
               {w.mode === 'auto' ? (
-                <span className="rounded-full bg-open/12 px-2.5 py-1 text-[11px] font-semibold text-open">
-                  Auto-claim
+                <span className="rounded-full border border-line px-2.5 py-1 text-[11px] font-medium text-muted">
+                  Auto-claim, later
                 </span>
               ) : (
-                <span className="rounded-full border border-line px-2.5 py-1 text-[11px] font-medium text-muted">
+                <span className="rounded-full bg-open/12 px-2.5 py-1 text-[11px] font-semibold text-open">
                   Notify
                 </span>
               )}

@@ -100,7 +100,7 @@ describe('toState', () => {
   it('carries every field the differ compares', () => {
     const s = toState({
       crn: '1', subject: 'CS', courseNumber: '260', code: 'CS 260', title: 't', section: 'A',
-      credits: 3, instructor: null, meetingDays: null, meetingTime: null, campus: null,
+      credits: 3, instructor: null, meetingDays: null, meetingTime: null, campus: null, level: null,
       seats: 5, capacity: 50, enrollment: 45, waitlist: 2, waitlistCap: 10, waitlistAvailable: 8,
     })
     expect(s).toEqual({

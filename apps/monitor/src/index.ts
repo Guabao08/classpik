@@ -3,11 +3,12 @@ import { dirname, join } from 'node:path'
 import { buildAdapters } from './adapters/registry.js'
 import { DEMO_SECTIONS, FixtureAdapter } from './adapters/fixture.js'
 import { PoliteClient } from './adapters/http.js'
-import type { SisAdapter, SisId } from './adapters/types.js'
+import type { SchoolConfig, SisAdapter, SisId } from './adapters/types.js'
 import { loadSchoolsFromDir, parseSchoolConfig } from './config/schools.js'
 import { migrate, openDb } from './core/db.js'
 import { Repo } from './core/repo.js'
 import { Poller, Runner } from './core/poller.js'
+import { SubjectDiscovery } from './core/discovery.js'
 import { ConsoleTransport, Dispatcher, WebhookTransport, type Transport } from './core/notify.js'
 import { emailFromEnv } from './config/email.js'
 import { createApi } from './api/server.js'
@@ -72,13 +73,21 @@ export async function start(opts: StartOptions = {}) {
     if (schools.length === 0) {
       log('no enabled schools found', { schoolsDir, hint: 'set enabled: true in a schools/*.yaml, or run with --demo' })
     }
-    for (const school of schools) {
-      repo.upsertSchool(school)
-      log('school loaded', { id: school.id, sis: school.sis, subjects: school.subjects.length })
-    }
+    for (const school of schools) registerSchool(repo, school, log)
   }
 
-  const transports: Transport[] = [new ConsoleTransport(), new WebhookTransport()]
+  // Off unless an operator says otherwise. With it on, a watch may point at a
+  // webhook on loopback or an RFC1918 host, which is useful against a local
+  // sink and is an SSRF primitive anywhere else.
+  const allowPrivateWebhooks = process.env.CLASSPIK_ALLOW_PRIVATE_WEBHOOKS === '1'
+  if (allowPrivateWebhooks) {
+    log('private webhook targets are allowed, which is a development setting only')
+  }
+
+  const transports: Transport[] = [
+    new ConsoleTransport(),
+    new WebhookTransport(undefined, undefined, { allowPrivateTargets: allowPrivateWebhooks }),
+  ]
   const email = emailFromEnv()
   if (email) {
     transports.push(email.transport)
@@ -91,15 +100,32 @@ export async function start(opts: StartOptions = {}) {
 
   const dispatcher = new Dispatcher(repo, transports)
   const poller = new Poller(repo, adapters, dispatcher, { log })
+  const discovery = new SubjectDiscovery(repo, adapters, { log })
   const runner = new Runner(poller, dispatcher, {
     tickIntervalMs: opts.tickIntervalMs ?? 15_000,
+    // Passed so the loop can prune expired sessions; nothing else called that.
+    repo,
+    discovery,
     log,
   })
+  // Targets are leased, so this is safe to run alongside other copies of itself
+  // against the same database. The id is what tells them apart in the lease.
+  log('poller ready', { worker: poller.workerId })
+
+  const adminToken = (process.env.CLASSPIK_ADMIN_TOKEN ?? '').trim() || null
+  if (adminToken === null) {
+    log('no CLASSPIK_ADMIN_TOKEN, so POST /api/poll is disabled', {
+      hint: 'the loop polls on its own schedule either way',
+    })
+  }
 
   const server = createApi({
     repo,
     poller,
     dispatcher,
+    discovery,
+    adminToken,
+    allowPrivateWebhooks,
     corsOrigins: opts.corsOrigins ?? corsFromEnv(),
   })
 
@@ -118,6 +144,56 @@ export async function start(opts: StartOptions = {}) {
   process.on('SIGTERM', () => void shutdown())
 
   return { db, repo, poller, dispatcher, runner, server, shutdown }
+}
+
+/**
+ * Store a school and give it something to poll.
+ *
+ * Loading the config used to be the whole of this, which meant a school could
+ * be enabled, log "school loaded", and then poll nothing at all forever:
+ * `poll_targets` stayed empty, so `claimTargets` returned nothing and the
+ * service ran with zero requests and zero errors and no line anywhere saying
+ * so. Terms the config already knows are seeded here, and a school we cannot
+ * seed says so out loud rather than looking healthy.
+ *
+ * Subject discovery does not replace this. It fills the browsable catalogue,
+ * and a catalogue with nothing seeded still polls nothing, so the warning below
+ * stays true and stays useful.
+ */
+export function registerSchool(
+  repo: Repo,
+  school: SchoolConfig,
+  log: (msg: string, meta?: Record<string, unknown>) => void
+): number {
+  repo.upsertSchool(school)
+  log('school loaded', { id: school.id, sis: school.sis, subjects: school.subjects.length })
+
+  const terms = school.peoplesoft?.terms ?? []
+  if (terms.length > 0) {
+    repo.replaceTerms(school.id, terms)
+    for (const term of terms) {
+      for (const subject of school.subjects) {
+        repo.ensureTarget(school.id, term.code, subject, school.polling.baseIntervalMs)
+      }
+    }
+  }
+
+  const targets = repo.countTargetsForSchool(school.id)
+  if (targets === 0) {
+    // Banner carries no term list in config, so its terms and targets come from
+    // the CLI. Naming the exact command is the difference between a warning and
+    // a shrug. Discovery does not remove this warning: it fills the browsable
+    // catalogue, and a catalogue with nothing seeded still polls nothing, which
+    // is the state this line exists to make visible.
+    log('school has no poll targets, so nothing about it will be polled', {
+      id: school.id,
+      fix: `npm run cli -- seed ${school.id} <term>`,
+      alternative: 'let discovery fill the catalogue, then browse a subject to seed it',
+    })
+  } else {
+    log('poll targets ready', { id: school.id, targets })
+  }
+  return targets
 }
 
 function corsFromEnv(): string[] {

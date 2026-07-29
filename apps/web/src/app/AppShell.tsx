@@ -3,13 +3,13 @@ import { Logo } from '../components/ui'
 import SearchView from './SearchView'
 import WatchlistView from './WatchlistView'
 import AlertsView from './AlertsView'
-import SignInView from './SignInView'
+import ScopeSwitcher from './ScopeSwitcher'
+import { useSchools } from '../lib/catalog'
 import {
   api,
   ApiError,
   API_BASE,
-  getToken,
-  setToken,
+  type Channel,
   type EventItem,
   type Stats,
   type User,
@@ -50,52 +50,32 @@ const nav: { id: View; label: string; icon: React.ReactNode }[] = [
   },
 ]
 
-export default function AppShell() {
+/**
+ * The product, for a student we already know. Whether anyone is signed in is
+ * decided one level up, by the router, since /login has to answer the same
+ * question and two copies of it would disagree exactly on the redirect.
+ */
+export default function AppShell({
+  user,
+  onUser,
+  onSignOut,
+}: {
+  user: User
+  /** The search scope lives on the account, so changing it hands back a new user. */
+  onUser: (user: User) => void
+  onSignOut: () => void
+}) {
   const [view, setView] = useState<View>('search')
-  const [user, setUser] = useState<User | null>(null)
-  // Null while we are still finding out whether the stored token is any good.
-  const [checkedSession, setCheckedSession] = useState(false)
   const [watches, setWatches] = useState<Watch[]>([])
   const [events, setEvents] = useState<EventItem[]>([])
   const [stats, setStats] = useState<Stats | null>(null)
   const [offline, setOffline] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-
-  // A stored token can be expired or revoked, and the only way to know is to
-  // ask. Until it answers, showing either the app or the sign-in form would be
-  // a guess that flickers when it turns out wrong.
-  useEffect(() => {
-    if (getToken() === null) {
-      setCheckedSession(true)
-      return
-    }
-    api
-      .me()
-      .then((res) => setUser(res.user))
-      .catch((err) => {
-        // Only a 401 means the token is bad. A monitor that is simply down must
-        // not silently sign the user out.
-        if (err instanceof ApiError && err.status === 401) setToken(null)
-        else if (err instanceof ApiError) setOffline(err.message)
-      })
-      .finally(() => setCheckedSession(true))
-  }, [])
-
-  const signOut = useCallback(async () => {
-    try {
-      await api.logout()
-    } catch {
-      /* the local token goes either way; a failed revoke is not worth blocking on */
-    }
-    setToken(null)
-    setUser(null)
-    setWatches([])
-    setEvents([])
-    setView('search')
-  }, [])
+  // Only so the watchlist can name a school rather than print its id at a
+  // student who has never seen one.
+  const schools = useSchools()
 
   const refresh = useCallback(async () => {
-    if (user === null) return
     try {
       const [w, e, s] = await Promise.all([api.watches(), api.events(), api.stats()])
       setWatches(w.watches)
@@ -103,24 +83,25 @@ export default function AppShell() {
       setStats(s)
       setOffline(null)
     } catch (err) {
+      // A session that died while the tab was open drops back to the router,
+      // which is the only thing that can send this student to /login.
       if (err instanceof ApiError && err.status === 401) {
-        setUser(null)
+        onSignOut()
         return
       }
       setOffline(err instanceof ApiError ? err.message : 'Something went wrong')
     } finally {
       setLoading(false)
     }
-  }, [user])
+  }, [onSignOut])
 
   useEffect(() => {
-    if (user === null) return
     void refresh()
     // The monitor polls on its own schedule, so the UI just re-reads
     // periodically rather than trying to hold a socket open.
     const timer = setInterval(() => void refresh(), 15_000)
     return () => clearInterval(timer)
-  }, [refresh, user])
+  }, [refresh])
 
   const watchedIds = new Map(watches.map((w) => [w.section.id, w]))
 
@@ -150,19 +131,35 @@ export default function AppShell() {
     [refresh]
   )
 
-  if (!checkedSession) {
-    return <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-muted">Loading…</div>
-  }
+  /**
+   * Posting a watch that already exists updates it, so this is how a student
+   * moves one between the in-app record and email. Email was reachable only by
+   * curl before this: nothing here ever passed a channel, so every watch the
+   * app created was a console watch whatever the server was configured to send.
+   */
+  const setChannel = useCallback(
+    async (sectionId: string, channel: Channel) => {
+      try {
+        await api.createWatch({ sectionId, channel })
+        await refresh()
+      } catch (err) {
+        setOffline(err instanceof ApiError ? err.message : 'Could not change how alerts arrive')
+      }
+    },
+    [refresh]
+  )
 
-  if (user === null) {
-    return <SignInView onSignedIn={setUser} />
-  }
+  // The server says what it can deliver. Offering email where no provider is
+  // configured would be a button that fails at the one moment it matters.
+  const emailReady = (stats?.channels ?? []).includes('email')
 
   return (
     <div className="flex min-h-screen bg-ink">
-      <aside className="fixed inset-y-0 left-0 flex w-[236px] flex-col border-r border-line bg-ink-2/50 px-4 py-5">
+      <aside className="fixed inset-y-0 left-0 flex w-[236px] flex-col overflow-y-auto border-r border-line bg-ink-2/50 px-4 py-5">
         <div className="px-2 pb-6">
-          <Logo />
+          <a href="/" aria-label="ClassPik home">
+            <Logo />
+          </a>
         </div>
 
         <nav className="flex flex-col gap-1">
@@ -194,13 +191,15 @@ export default function AppShell() {
           })}
         </nav>
 
-        <div className="mt-auto space-y-3">
+        <ScopeSwitcher user={user} onUser={onUser} />
+
+        <div className="mt-auto space-y-3 pt-6">
           <div className="rounded-xl border border-line bg-white/3 p-3.5">
             <p className="truncate text-xs font-semibold" title={user.email}>
               {user.email}
             </p>
             <button
-              onClick={() => void signOut()}
+              onClick={onSignOut}
               className="mt-1.5 text-[11px] text-muted transition-colors hover:text-bright"
             >
               Sign out
@@ -245,9 +244,20 @@ export default function AppShell() {
           <div className="px-9 py-16 text-sm text-muted">Loading…</div>
         ) : (
           <>
-            {view === 'search' && <SearchView watched={watchedIds} onToggle={toggleWatch} />}
+            {view === 'search' && (
+              <SearchView watched={watchedIds} onToggle={toggleWatch} user={user} onUser={onUser} />
+            )}
             {view === 'watchlist' && (
-              <WatchlistView watches={watches} onToggle={toggleWatch} onSetMode={setMode} />
+              <WatchlistView
+                watches={watches}
+                onToggle={toggleWatch}
+                onSetMode={setMode}
+                onSetChannel={setChannel}
+                emailReady={emailReady}
+                email={user.email}
+                currentSchool={user.school}
+                schools={schools}
+              />
             )}
             {view === 'alerts' && <AlertsView events={events} />}
           </>

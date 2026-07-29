@@ -29,6 +29,8 @@ export interface FixtureSection {
   instructor?: string
   meetingDays?: string
   meetingTime?: string
+  /** Registrar level code. Absent means the install reports none, which is a real case. */
+  level?: string
   seats: number
   capacity: number
   waitlist?: number
@@ -91,6 +93,7 @@ export class FixtureAdapter implements SisAdapter {
           meetingDays: s.meetingDays ?? null,
           meetingTime: s.meetingTime ?? null,
           campus: null,
+          level: s.level ?? null,
           seats,
           capacity: s.capacity,
           enrollment: Math.max(0, s.capacity - seats),
@@ -111,13 +114,20 @@ export class FixtureAdapter implements SisAdapter {
   }
 }
 
-/** A small, realistic catalog used by the demo and by tests. */
+/**
+ * A small, realistic catalog used by the demo and by tests.
+ *
+ * Two levels on purpose. With one, level scoping looks like it works when it is
+ * doing nothing at all, and the demo would never show a student a catalog
+ * narrowed to their own.
+ */
 export const DEMO_SECTIONS: FixtureSection[] = [
-  { crn: '30412', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'B', credits: 3, instructor: 'Whitfield', meetingDays: 'MWF', meetingTime: '10:00a-10:50a', seats: 0, capacity: 90, waitlist: 14, waitlistCap: 25 },
-  { crn: '30413', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'C', credits: 3, instructor: 'Okonkwo', meetingDays: 'TR', meetingTime: '2:00p-3:15p', seats: 0, capacity: 90, waitlist: 25, waitlistCap: 25 },
-  { crn: '30418', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'E', credits: 3, instructor: 'Bhatt', meetingDays: 'MWF', meetingTime: '8:00a-8:50a', seats: 22, capacity: 90, waitlist: 0, waitlistCap: 25 },
-  { crn: '30500', subject: 'MATH', courseNumber: '310', title: 'Real Analysis', section: 'A', credits: 3, instructor: 'Ferreira', meetingDays: 'TR', meetingTime: '9:30a-10:45a', seats: 0, capacity: 45, waitlist: 6, waitlistCap: 15 },
-  { crn: '30188', subject: 'CS', courseNumber: '260', title: 'Data Structures', section: 'A', credits: 4, instructor: 'Alvarez', meetingDays: 'MWF', meetingTime: '1:00p-1:50p', seats: 3, capacity: 240, waitlist: 0, waitlistCap: 40 },
-  { crn: '30190', subject: 'CS', courseNumber: '260', title: 'Data Structures', section: 'B', credits: 4, instructor: 'Lindqvist', meetingDays: 'TR', meetingTime: '9:30a-10:45a', seats: 0, capacity: 200, waitlist: 24, waitlistCap: 40 },
-  { crn: '30655', subject: 'CS', courseNumber: '340', title: 'Operating Systems', section: 'D', credits: 3, instructor: 'Moreau', meetingDays: 'TR', meetingTime: '12:30p-1:45p', seats: 0, capacity: 60, waitlist: 28, waitlistCap: 30 },
+  { crn: '30412', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'B', credits: 3, instructor: 'Whitfield', meetingDays: 'MWF', meetingTime: '10:00a-10:50a', level: 'UGRD', seats: 0, capacity: 90, waitlist: 14, waitlistCap: 25 },
+  { crn: '30413', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'C', credits: 3, instructor: 'Okonkwo', meetingDays: 'TR', meetingTime: '2:00p-3:15p', level: 'UGRD', seats: 0, capacity: 90, waitlist: 25, waitlistCap: 25 },
+  { crn: '30418', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'E', credits: 3, instructor: 'Bhatt', meetingDays: 'MWF', meetingTime: '8:00a-8:50a', level: 'UGRD', seats: 22, capacity: 90, waitlist: 0, waitlistCap: 25 },
+  { crn: '30500', subject: 'MATH', courseNumber: '310', title: 'Real Analysis', section: 'A', credits: 3, instructor: 'Ferreira', meetingDays: 'TR', meetingTime: '9:30a-10:45a', level: 'UGRD', seats: 0, capacity: 45, waitlist: 6, waitlistCap: 15 },
+  { crn: '30188', subject: 'CS', courseNumber: '260', title: 'Data Structures', section: 'A', credits: 4, instructor: 'Alvarez', meetingDays: 'MWF', meetingTime: '1:00p-1:50p', level: 'UGRD', seats: 3, capacity: 240, waitlist: 0, waitlistCap: 40 },
+  { crn: '30190', subject: 'CS', courseNumber: '260', title: 'Data Structures', section: 'B', credits: 4, instructor: 'Lindqvist', meetingDays: 'TR', meetingTime: '9:30a-10:45a', level: 'UGRD', seats: 0, capacity: 200, waitlist: 24, waitlistCap: 40 },
+  { crn: '30655', subject: 'CS', courseNumber: '340', title: 'Operating Systems', section: 'D', credits: 3, instructor: 'Moreau', meetingDays: 'TR', meetingTime: '12:30p-1:45p', level: 'UGRD', seats: 0, capacity: 60, waitlist: 28, waitlistCap: 30 },
+  { crn: '30720', subject: 'CS', courseNumber: '610', title: 'Distributed Systems', section: 'A', credits: 3, instructor: 'Ferreira', meetingDays: 'W', meetingTime: '4:00p-6:45p', level: 'GRAD', seats: 0, capacity: 30, waitlist: 9, waitlistCap: 20 },
 ]

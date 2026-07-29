@@ -8,7 +8,7 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "start": "node --experimental-sqlite --disable-warning=ExperimentalWarning src/index.js",
+    "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "serve": "tsx src/index.ts",
     "cli": "tsx src/cli.ts",

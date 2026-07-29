@@ -11,11 +11,13 @@ export default function Footer() {
             Registration opens whether you’re awake or not.
           </h2>
           <p className="mx-auto mt-5 max-w-lg text-[15px] leading-relaxed text-muted">
-            Start with a free watch on any section. Auto-claim when you’re ready.
+            Make an account and watch any section for free. Auto-claim is not built yet.
           </p>
           <div className="mt-8 flex justify-center">
-            <StarBorder as="a" href="#" color="#c8ff4d" speed="4s" thickness={1.5}>
-              <span className="text-sm font-semibold">Get early access</span>
+            {/* The sentence above this button says to make an account, so the
+                button makes an account. */}
+            <StarBorder as="a" href="/signup" color="#c8ff4d" speed="4s" thickness={1.5}>
+              <span className="text-sm font-semibold">Make an account</span>
             </StarBorder>
           </div>
         </Reveal>
@@ -25,8 +27,8 @@ export default function Footer() {
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-5 px-6 py-9 sm:flex-row">
           <Logo />
           <p className="max-w-md text-center text-xs leading-relaxed text-muted sm:text-right">
-            ClassPik registers on your behalf using your own account. Check your school’s
-            registration policy before enabling auto-claim.
+            ClassPik watches your school’s public class search and tells you when a seat opens. It
+            never asks for your school login. Registering is still something you do yourself.
           </p>
         </div>
       </footer>

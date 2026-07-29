@@ -109,9 +109,27 @@ export class ResendTransport implements Transport {
       )
     }
 
+    // One controller and one timer for the whole exchange, headers and body.
+    // Clearing the timer as soon as the headers arrived left `res.text()` below
+    // running with the abort already disarmed, so a 502 whose chunked body then
+    // stalled hung this send forever, and with it the flush loop and the whole
+    // poller. A bad gateway is a likelier way to lose the service than a dead
+    // relay is.
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
 
+    try {
+      return await this.exchange(controller, message, `${payload.watchId}:${payload.event.id}`)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async exchange(
+    controller: AbortController,
+    message: MailMessage,
+    idempotencyKey: string
+  ): Promise<void> {
     let res: Response
     try {
       res = await this.fetchImpl(this.endpoint, {
@@ -126,7 +144,7 @@ export class ResendTransport implements Transport {
           // The queue is already UNIQUE (watch_id, event_id), so this key means
           // a retry after a network timeout cannot double-send even when the
           // first request actually landed.
-          'Idempotency-Key': `${payload.watchId}:${payload.event.id}`,
+          'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify({
           from: message.from,
@@ -143,8 +161,6 @@ export class ResendTransport implements Transport {
       // An abort or a socket failure says nothing about the message, so it goes
       // back on the retry ladder.
       throw new Error(`Resend request failed: ${describe(err)}`)
-    } finally {
-      clearTimeout(timer)
     }
 
     if (res.ok) return

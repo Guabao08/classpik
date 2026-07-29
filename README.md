@@ -9,7 +9,7 @@ Autonomous course registration for college students.
 
 | Path | What it is | Status |
 |---|---|---|
-| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 211 tests** |
+| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 505 tests** |
 | [`apps/web`](apps/web) | Landing page and the watcher UI, wired to the monitor API. | Built |
 | *(not started)* | The local agent that performs enrollment. | Blocked on Phase 0 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Every design decision and why. | |
@@ -29,10 +29,16 @@ Then the web app:
 cd apps/web && npm install && npm run dev
 ```
 
-Open the app at `/#app`. Demo mode runs against a simulated student system, so
-nothing touches a real registrar. Search for `MATH 221`, watch section B (which
-starts full), and within a minute the simulated registrar frees a seat and the
-alert appears.
+Open the app at `/#app`. It opens on a sign-in wall: watching a section needs a
+ClassPik account, which is ours and never a school login. Create one with any
+email address and a password of at least 10 characters. Nothing is emailed to
+it, since email delivery is off unless the monitor is configured with a
+provider.
+
+Then search for `MATH 221`, watch section B (which starts full), and within a
+minute the simulated registrar frees a seat and the alert appears under Alerts.
+Demo mode runs against a simulated student system, so nothing touches a real
+registrar.
 
 ## The one decision that shapes everything
 
@@ -54,7 +60,9 @@ strategy, the SIS adapter design, and the known risks.
 
 ## Where things stand
 
-The watcher is real and tested. The enrollment half is not started, and it is
+The watcher is real and tested, though neither SIS adapter has been run against
+a live install yet: both are built to a documented contract and tested against
+recorded response shapes. The enrollment half is not started, and it is
 gated on one unanswered question: **will a course registration system accept an
 enrollment request replayed by a script?** [PHASE0.md](PHASE0.md) is the
 experiment that answers it. Until it does, auto-claim is a stored preference

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, ApiError, type Section, type Watch } from '../lib/api'
+import { api, ApiError, type Section, type User, type Watch } from '../lib/api'
+import { useLevels } from '../lib/catalog'
 import { SeatBar, StatusPill } from '../components/ui'
 
 const FILTERS = [
@@ -12,9 +13,14 @@ const FILTERS = [
 export default function SearchView({
   watched,
   onToggle,
+  user,
+  onUser,
 }: {
   watched: Map<string, Watch>
   onToggle: (sectionId: string) => void
+  user: User
+  /** The scope lives on the account, so changing it hands back a new user. */
+  onUser: (user: User) => void
 }) {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<string>('')
@@ -25,6 +31,11 @@ export default function SearchView({
 
   // Debounced so typing "MATH 221" is one request, not eight.
   const debounced = useDebounced(query, 250)
+
+  // The school, term and levels are not sent with the search: the monitor reads
+  // them off the account. They are here only so the results reload when the
+  // student changes one.
+  const scopeKey = `${user.school ?? ''}|${user.term ?? ''}|${user.levels.join(',')}`
 
   useEffect(() => {
     let cancelled = false
@@ -43,7 +54,7 @@ export default function SearchView({
       })
       .finally(() => !cancelled && setLoading(false))
     return () => { cancelled = true }
-  }, [debounced, status])
+  }, [debounced, status, scopeKey])
 
   const handleToggle = async (id: string) => {
     setPending(id)
@@ -53,7 +64,7 @@ export default function SearchView({
 
   return (
     <div className="px-9 py-8">
-      <header className="mb-7">
+      <header className="mb-5">
         <h1 className="text-2xl font-bold tracking-[-0.02em]">Find classes</h1>
         <p className="mt-1.5 text-sm text-muted">
           Seat counts from your school’s public schedule. Your school login is never involved.
@@ -90,6 +101,8 @@ export default function SearchView({
           ))}
         </div>
       </div>
+
+      <LevelFilter user={user} onUser={onUser} />
 
       <div className="mb-3 flex items-baseline justify-between">
         <span className="num text-xs text-muted">
@@ -139,6 +152,8 @@ export default function SearchView({
                   <div className="mt-0.5 truncate text-xs text-muted">
                     {s.title}
                     {s.instructor ? ` · ${s.instructor}` : ''}
+                    {/* The registrar's own code, never a word we invented for it. */}
+                    {s.level ? ` · ${s.level}` : ''}
                   </div>
                 </div>
 
@@ -175,6 +190,79 @@ export default function SearchView({
           })
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * The academic levels this search covers, starting from the ones on the
+ * account, which is where onboarding put them.
+ *
+ * Ticking one edits the account rather than the query string, because the
+ * monitor scopes search off the account and two sources for the same thing
+ * eventually disagree. It is also the only place the scope widens: an
+ * undergraduate gets undergraduate classes by default, and a graduate seminar
+ * is a box they tick rather than something we guess at.
+ *
+ * The school and the term are not here. They are in the sidebar, because they
+ * are true everywhere in the app, and this one is a filter over the list
+ * directly below it.
+ */
+function LevelFilter({ user, onUser }: { user: User; onUser: (user: User) => void }) {
+  const levels = useLevels(user.school, user.term)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  // No school means no published list of levels to tick, so there is nothing
+  // honest to show. An empty row of buttons would read as a school with no
+  // levels rather than as a question we cannot ask yet.
+  if (levels.length === 0) return null
+
+  const toggle = async (level: string) => {
+    setSaving(true)
+    try {
+      const res = await api.updatePreferences({
+        levels: user.levels.includes(level)
+          ? user.levels.filter((x) => x !== level)
+          : [...user.levels, level],
+      })
+      onUser(res.user)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not change the levels')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mb-5 flex flex-wrap items-center gap-2">
+      <span className="text-xs text-muted">Levels</span>
+
+      {levels.map((l) => {
+        const on = user.levels.includes(l.level)
+        return (
+          <button
+            key={l.level}
+            aria-pressed={on}
+            disabled={saving}
+            onClick={() => void toggle(l.level)}
+            className={`rounded-full px-3 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+              on
+                ? 'border border-open/30 bg-open/12 text-open'
+                : 'border border-line text-muted hover:border-white/25 hover:text-bright'
+            }`}
+          >
+            {/* The registrar's own code, never a word we invented for it. */}
+            {l.level}
+            <span className="num ml-1.5 text-[10px] opacity-70">{l.sections}</span>
+          </button>
+        )
+      })}
+
+      {user.levels.length === 0 && <span className="text-[11px] text-muted">every level</span>}
+
+      {error && <span className="text-[11px] text-full">{error}</span>}
     </div>
   )
 }

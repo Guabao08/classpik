@@ -1,4 +1,5 @@
 import { Duplex } from 'node:stream'
+import { createServer as netCreateServer, type AddressInfo, type Socket } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { SmtpTransport, type ConnectFn, type UpgradeFn } from '../src/core/smtp.js'
 import { PermanentDeliveryError, type NotificationPayload } from '../src/core/notify.js'
@@ -428,6 +429,89 @@ describe('SmtpTransport', () => {
     const err = await t.send(payload(), TO).catch((e: unknown) => e)
     expect(err).not.toBeInstanceOf(PermanentDeliveryError)
     expect((err as Error).message).toMatch(/closed the connection|timed out/)
+  })
+
+  it('refuses to send in the clear when the relay offers no STARTTLS, credentials or not', async () => {
+    // The refusal used to be gated on having credentials to protect, so an
+    // unauthenticated internal relay fell straight through to MAIL FROM. The
+    // capability list that decides this comes from a pre-TLS EHLO, which is a
+    // reply anyone on the path can rewrite, so a stripped 250-STARTTLS line put
+    // the student's address and the course they watch on the wire in plaintext.
+    const server = smtpServer([{ expect: /^EHLO /, reply: '250-smtp.test Hello\r\n250 SIZE 0\r\n' }])
+    const err = await transportFor(server, { secure: false, user: null, pass: null })
+      .send(payload(), TO)
+      .catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(PermanentDeliveryError)
+    expect((err as Error).message).toMatch(/in the clear/)
+    expect(wire(server)).not.toContain('MAIL FROM')
+    expect(wire(server)).not.toContain('RCPT TO')
+    expect(wire(server)).not.toContain(TO)
+  })
+
+  it('sends in the clear only when an operator has explicitly given up TLS', async () => {
+    // The Mailpit case, and nothing else.
+    const server = smtpServer([
+      { expect: /^EHLO /, reply: '250-smtp.test Hello\r\n250 SIZE 0\r\n' },
+      { expect: /^MAIL FROM:/, reply: '250 Ok\r\n' },
+      { expect: /^RCPT TO:/, reply: '250 Ok\r\n' },
+      { expect: /^DATA/, reply: '354 go\r\n' },
+      { expect: /^From: /, reply: '250 queued\r\n' },
+      { expect: /^QUIT/, reply: '221 Bye\r\n' },
+    ])
+    await transportFor(server, {
+      secure: false, user: null, pass: null, requireTls: false,
+    }).send(payload(), TO)
+    expect(server.mismatches).toEqual([])
+  })
+
+  it('gives up on a relay that accepts the TCP connection and never handshakes', async () => {
+    // The real connect factory, not an injected one. timeoutMs only ever
+    // covered reply reads, and a read only exists once a socket does, so a
+    // relay that completed the TCP handshake and then sent no ServerHello left
+    // this promise unsettled forever: send never settled, flush never settled,
+    // and the Runner's latch stayed closed for the life of the process.
+    const accepted: Socket[] = []
+    const silent = netCreateServer((socket) => {
+      // Accept, then say nothing at all.
+      accepted.push(socket)
+    })
+    await new Promise<void>((r) => silent.listen(0, '127.0.0.1', r))
+    const port = (silent.address() as AddressInfo).port
+
+    const t = new SmtpTransport({ host: '127.0.0.1', port, secure: true, from: FROM, timeoutMs: 150 })
+    const started = Date.now()
+    const err = await t.send(payload(), TO).catch((e: unknown) => e)
+
+    expect((err as Error).message).toMatch(/timed out after 150ms connecting/)
+    expect(err).not.toBeInstanceOf(PermanentDeliveryError)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    for (const socket of accepted) socket.destroy()
+    await new Promise<void>((r) => silent.close(() => r()))
+  })
+
+  it('gives up on a relay that answers STARTTLS and then never handshakes', async () => {
+    // Same hang, one step later, and setTimeout on the underlying socket does
+    // not cover a TLS handshake, so this needs its own timer.
+    const stalling = netCreateServer((socket) => {
+      socket.setEncoding('utf8')
+      socket.write('220 smtp.test ESMTP ready\r\n')
+      socket.on('data', (chunk: string) => {
+        if (/^EHLO/.test(chunk)) socket.write('250-smtp.test Hello\r\n250 STARTTLS\r\n')
+        else if (/^STARTTLS/.test(chunk)) socket.write('220 Ready\r\n')
+        // Then nothing: no certificate, no alert, no close.
+      })
+    })
+    await new Promise<void>((r) => stalling.listen(0, '127.0.0.1', r))
+    const port = (stalling.address() as AddressInfo).port
+
+    const t = new SmtpTransport({ host: '127.0.0.1', port, secure: false, from: FROM, timeoutMs: 150 })
+    const started = Date.now()
+    const err = await t.send(payload(), TO).catch((e: unknown) => e)
+
+    expect((err as Error).message).toMatch(/timed out after 150ms on the TLS handshake/)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    await new Promise<void>((r) => stalling.close(() => r()))
   })
 
   it('refuses to construct with a From address nobody could send from', () => {

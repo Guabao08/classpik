@@ -1,8 +1,11 @@
+import { hostname } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { SisError, type SchoolConfig, type SisAdapter } from '../adapters/types.js'
 import { diffSection, NOTIFIABLE, reconcile, toState, type DetectedEvent } from './diff.js'
 import { nextIntervalMs, type ScheduleConfig } from './schedule.js'
 import type { Repo, TargetRow } from './repo.js'
 import type { Dispatcher } from './notify.js'
+import type { SubjectDiscovery } from './discovery.js'
 
 /**
  * The poll loop. Takes a due target, fetches it, diffs it, records events, and
@@ -11,7 +14,25 @@ import type { Dispatcher } from './notify.js'
  * One target at a time by design. Concurrency and rate limiting live in
  * PoliteClient, so this file stays about correctness and the HTTP layer stays
  * about not getting us blocked.
+ *
+ * Several of these may run at once, in one process or in several, against one
+ * database. Work is divided by leasing each target before it is fetched, so two
+ * workers never spend two upstream requests on the same subject. See
+ * Repo.claimTargets.
  */
+
+/**
+ * How long a claim is good for. Comfortably longer than one fetch, including
+ * the retries and the inter-request gap PoliteClient imposes, and short enough
+ * that a worker killed mid-poll costs one delayed cycle rather than a target
+ * nobody polls again.
+ */
+export const DEFAULT_LEASE_MS = 120_000
+
+/** Distinct per process, and per Poller within a process, which is what leases are keyed on. */
+export function newWorkerId(): string {
+  return `${hostname()}:${process.pid}:${randomBytes(4).toString('hex')}`
+}
 
 export interface PollerOptions {
   now?: () => number
@@ -19,6 +40,10 @@ export interface PollerOptions {
   /** Targets fetched per tick. The client still throttles the actual requests. */
   batchSize?: number
   log?: (msg: string, meta?: Record<string, unknown>) => void
+  /** Lease identity. Defaults to something unique per process, which is what you want. */
+  workerId?: string
+  /** How long a claimed target stays claimed if this worker never comes back. */
+  leaseMs?: number
 }
 
 export interface PollOutcome {
@@ -43,6 +68,8 @@ export class Poller {
   private readonly random: () => number
   private readonly batchSize: number
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void
+  readonly workerId: string
+  private readonly leaseMs: number
 
   constructor(
     private readonly repo: Repo,
@@ -54,22 +81,37 @@ export class Poller {
     this.random = opts.random ?? Math.random
     this.batchSize = opts.batchSize ?? 10
     this.log = opts.log ?? (() => {})
+    this.workerId = opts.workerId ?? newWorkerId()
+    this.leaseMs = opts.leaseMs ?? DEFAULT_LEASE_MS
   }
 
   /**
-   * One pass. Unseeded targets come first: they have no sections yet, so no
-   * watch can point at them, so they would otherwise never become "due".
+   * One pass, up to `batchSize` targets.
+   *
+   * Claimed one at a time rather than as a batch, on purpose. A batch claim
+   * would have to cover the whole batch with one lease, so the lease would need
+   * to outlast the slowest possible drain of the batch, and every crash would
+   * strand that much work for that long. Claiming per target keeps the lease
+   * the length of one fetch, and it lets two workers interleave through the
+   * same due list instead of one taking ten and the other finding nothing.
+   *
+   * Ordering is inside the claim: a target nobody has ever polled comes first,
+   * since it has no sections yet, so no watch can point at it, so it would
+   * otherwise never become due at all.
    */
   async tick(signal?: AbortSignal): Promise<TickResult> {
-    const at = this.now()
-    const seed = this.repo.unseededTargets(this.batchSize, at)
-    const due = this.repo.dueTargets(Math.max(0, this.batchSize - seed.length), at)
-
-    const targets = [...seed, ...due.filter((d) => !seed.some((s) => s.id === d.id))]
     const outcomes: PollOutcome[] = []
 
-    for (const target of targets) {
+    for (let i = 0; i < this.batchSize; i++) {
       if (signal?.aborted) break
+      const [target] = this.repo.claimTargets(this.workerId, 1, this.now(), this.leaseMs)
+      if (!target) break
+      if (signal?.aborted) {
+        // Claimed and then abandoned. Handing it back beats making the rest of
+        // the fleet wait out a lease on work that is ready now.
+        this.repo.releaseTargets([target.id], this.workerId)
+        break
+      }
       outcomes.push(await this.pollTarget(target, signal))
     }
 
@@ -154,7 +196,19 @@ export class Poller {
 
     let queued = 0
     for (const watch of this.repo.activeWatchesForSection(sectionId)) {
-      if (this.repo.enqueueNotification(watch, eventId) !== null) queued++
+      try {
+        if (this.repo.enqueueNotification(watch, eventId) !== null) queued++
+      } catch (err) {
+        // The queue insert is the one write this whole service exists to make,
+        // so a failed one is loud and does not stop the rest of the poll. It
+        // used to be swallowed and read back as "already queued", which meant a
+        // full disk lost the alert with no row and no log line anywhere.
+        this.log('could not queue a notification', {
+          watch: watch.id,
+          event: eventId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
     return queued
   }
@@ -221,14 +275,40 @@ export interface RunnerOptions {
   tickIntervalMs?: number
   now?: () => number
   log?: (msg: string, meta?: Record<string, unknown>) => void
+  /**
+   * Ceiling on one tick. A transport that never settles must not be able to
+   * hold the loop closed forever, whatever future transports get written.
+   */
+  tickBudgetMs?: number
+  /** Injectable so a test can prune sessions without waiting a day. */
+  purgeIntervalMs?: number
+  repo?: Repo
+  /** Refreshes the browsable subject catalogue. Absent means the loop does not discover. */
+  discovery?: SubjectDiscovery
+  /**
+   * How often to re-ask each school for its subject list. Daily by default: a
+   * catalogue changes between terms, not between ticks, and this is one request
+   * per (school, term) every time it runs.
+   */
+  discoveryIntervalMs?: number
 }
 
 /** Wraps Poller and Dispatcher in a loop that can be started and stopped cleanly. */
 export class Runner {
   private timer: NodeJS.Timeout | null = null
   private running = false
+  /** When the in-flight tick started, so a wedged one can be abandoned. */
+  private runningSince = 0
+  private lastPurgeAt = 0
+  private lastDiscoveryAt = 0
   private readonly controller = new AbortController()
   private readonly tickIntervalMs: number
+  private readonly tickBudgetMs: number
+  private readonly purgeIntervalMs: number
+  private readonly discovery: SubjectDiscovery | null
+  private readonly discoveryIntervalMs: number
+  private readonly repo: Repo | null
+  private readonly now: () => number
   private readonly log: (msg: string, meta?: Record<string, unknown>) => void
 
   constructor(
@@ -237,23 +317,42 @@ export class Runner {
     opts: RunnerOptions = {}
   ) {
     this.tickIntervalMs = opts.tickIntervalMs ?? 15_000
+    this.tickBudgetMs = opts.tickBudgetMs ?? Math.max(60_000, this.tickIntervalMs * 4)
+    this.purgeIntervalMs = opts.purgeIntervalMs ?? 60 * 60_000
+    this.discovery = opts.discovery ?? null
+    this.discoveryIntervalMs = opts.discoveryIntervalMs ?? 24 * 60 * 60_000
+    this.repo = opts.repo ?? null
+    this.now = opts.now ?? Date.now
     this.log = opts.log ?? (() => {})
   }
 
   start(): void {
     if (this.timer) return
     const loop = async (): Promise<void> => {
-      if (this.running) return
+      // The latch is time-bounded rather than absolute. It used to be a plain
+      // boolean, so a single flush that never settled left it true and every
+      // later tick returned at this line: the process stayed up, /api/stats
+      // looked healthy, and the service quietly stopped polling forever.
+      if (this.running) {
+        const stuckFor = this.now() - this.runningSince
+        if (stuckFor < this.tickBudgetMs) return
+        this.log('abandoning a tick that never finished', { stuckFor })
+      }
       this.running = true
+      this.runningSince = this.now()
       try {
+        await this.refreshSubjects()
         const result = await this.poller.tick(this.controller.signal)
         if (result.polled > 0) {
           this.log('tick', { polled: result.polled, queued: result.notificationsQueued })
         }
-        const sent = await this.dispatcher.flush()
+        // Bounded independently, because delivery talks to a relay or a
+        // provider and those are the parts that hang rather than fail.
+        const sent = await this.withBudget(this.dispatcher.flush(), 'dispatch')
         if (sent.delivered + sent.failed + sent.retrying > 0) {
           this.log('dispatch', { ...sent })
         }
+        this.purgeSessions()
       } catch (err) {
         this.log('tick error', { error: err instanceof Error ? err.message : String(err) })
       } finally {
@@ -262,6 +361,65 @@ export class Runner {
     }
     this.timer = setInterval(() => void loop(), this.tickIntervalMs)
     void loop()
+  }
+
+  /**
+   * Sessions are never otherwise pruned, so the table grows one row per login
+   * for the life of the database. Hourly, and only when the Runner was given a
+   * repo, so nothing about the existing constructor call sites has to change.
+   */
+  private purgeSessions(): void {
+    if (!this.repo) return
+    const at = this.now()
+    if (this.lastPurgeAt !== 0 && at - this.lastPurgeAt < this.purgeIntervalMs) return
+    this.lastPurgeAt = at
+    const removed = this.repo.purgeExpiredSessions(at)
+    if (removed > 0) this.log('purged expired sessions', { removed })
+  }
+
+  /**
+   * Re-read each school's subject list on a slow timer.
+   *
+   * Bounded twice over: one upstream request per (school, term) rather than per
+   * subject, and daily rather than per tick. Finding a subject creates no
+   * polling work by itself, so this is cheap in both directions. See
+   * discovery.ts for why that separation is the whole point.
+   *
+   * Budgeted like delivery is, because it talks to a registrar and a registrar
+   * that accepts a connection and then says nothing is what wedges a loop.
+   */
+  private async refreshSubjects(): Promise<void> {
+    if (!this.discovery) return
+    const at = this.now()
+    if (this.lastDiscoveryAt !== 0 && at - this.lastDiscoveryAt < this.discoveryIntervalMs) return
+    this.lastDiscoveryAt = at
+    try {
+      const found = await this.withBudget(this.discovery.run(this.controller.signal), 'discovery')
+      if (found.queried > 0) this.log('subject discovery', { ...found })
+    } catch (err) {
+      // Never fatal, for the same reason it is never fatal inside run(): the
+      // watches we already have are worth more than the catalogue is.
+      this.log('subject discovery did not finish', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  private async withBudget<T>(work: Promise<T>, label: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${label} did not finish within ${this.tickBudgetMs}ms`)),
+            this.tickBudgetMs
+          )
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   }
 
   async stop(): Promise<void> {

@@ -253,6 +253,30 @@ describe('ResendTransport', () => {
     expect((err as Error).message).toContain('aborted')
   })
 
+  it('gives up on a provider that sends headers and then stalls the body', async () => {
+    // The abort used to be disarmed the moment the headers arrived, so reading
+    // the error body of a 502 whose chunked body never finished hung this send
+    // forever, and with it the flush loop and the whole poll loop. A bad
+    // gateway is a likelier way to lose the service than a dead relay is.
+    const impl = (async (_url: string, init: RequestInit = {}) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"mess'))
+          // Real fetch errors the body stream on abort. Nothing else ever ends it.
+          init.signal?.addEventListener('abort', () => controller.error(new Error('aborted')))
+        },
+      })
+      return new Response(body, { status: 502 })
+    }) as unknown as typeof fetch
+
+    const t = new ResendTransport({ apiKey: API_KEY, ...IDENTITY, fetchImpl: impl, timeoutMs: 25 })
+    const err = await t.send(payload(), 'student@example.edu').catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(PermanentDeliveryError)
+    expect((err as Error).message).toContain('502')
+  })
+
   it('rejects a malformed address without spending a request on it', async () => {
     const { t, calls } = transport()
     await expect(t.send(payload(), 'not-an-address')).rejects.toThrow(PermanentDeliveryError)
@@ -338,6 +362,26 @@ describe('emailFromEnv', () => {
     ).toThrow(/CLASSPIK_SMTP_HOST is required/)
   })
 
+  it('requires TLS unless an operator explicitly gives it up, and says so in the log line', () => {
+    const strict = emailFromEnv({
+      CLASSPIK_EMAIL_PROVIDER: 'smtp',
+      CLASSPIK_EMAIL_FROM: 'alerts@classpik.app',
+      CLASSPIK_SMTP_HOST: 'relay.internal',
+      CLASSPIK_SMTP_STARTTLS: '1',
+    })
+    expect(strict?.detail).not.toContain('NOT REQUIRED')
+
+    const relaxed = emailFromEnv({
+      CLASSPIK_EMAIL_PROVIDER: 'smtp',
+      CLASSPIK_EMAIL_FROM: 'alerts@classpik.app',
+      CLASSPIK_SMTP_HOST: 'localhost',
+      CLASSPIK_SMTP_STARTTLS: '1',
+      CLASSPIK_SMTP_REQUIRE_TLS: '0',
+    })
+    // Opting out has to be visible at startup, since nothing later will say it.
+    expect(relaxed?.detail).toContain('NOT REQUIRED')
+  })
+
   it('rejects an SMTP user without a password, which fails invisibly at the relay', () => {
     expect(() =>
       emailFromEnv({
@@ -382,7 +426,7 @@ describe('email through the delivery queue', () => {
   const rawSection: RawSection = {
     crn: '30412', subject: 'MATH', courseNumber: '221', code: 'MATH 221',
     title: 'Linear Algebra', section: 'B', credits: 3, instructor: 'A. Lovelace',
-    meetingDays: 'MWF', meetingTime: '10:00 am', campus: 'Main',
+    meetingDays: 'MWF', meetingTime: '10:00 am', campus: 'Main', level: 'UGRD',
     seats: 1, capacity: 90, enrollment: 89, waitlist: 0, waitlistCap: 25, waitlistAvailable: 25,
   }
 

@@ -1,9 +1,14 @@
 import Reveal from '../components/Reveal'
 import { SectionLabel } from '../components/ui'
 
+/**
+ * Kept honest against apps/monitor/README.md's adapter table. Both adapters are
+ * built and tested against recorded response shapes, and neither has been run
+ * against a live install, so neither says "Live".
+ */
 const schools = [
-  { name: 'Banner', sis: 'Ellucian · most large publics', state: 'live' },
-  { name: 'PeopleSoft', sis: 'Oracle Campus Solutions', state: 'live' },
+  { name: 'Banner', sis: 'Ellucian · most large publics', state: 'built' },
+  { name: 'PeopleSoft', sis: 'Oracle Campus Solutions, HighPoint CX only', state: 'built' },
   { name: 'Workday Student', sis: 'Newer adoptions', state: 'soon' },
 ]
 
@@ -23,7 +28,7 @@ export default function Schools() {
               will add it.
             </p>
             <a
-              href="#waitlist"
+              href="/signup"
               className="mt-7 inline-flex rounded-full border border-line px-5 py-2.5 text-sm font-medium transition hover:border-open/40 hover:text-open"
             >
               Request your school →
@@ -40,10 +45,12 @@ export default function Schools() {
                   <div className="text-sm font-semibold">{s.name}</div>
                   <div className="mt-0.5 text-xs text-muted">{s.sis}</div>
                 </div>
-                {s.state === 'live' ? (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-open/12 px-2.5 py-1 text-[11px] font-semibold text-open">
-                    <span className="h-1.5 w-1.5 rounded-full bg-open" />
-                    Live
+                {s.state === 'built' ? (
+                  <span
+                    className="inline-flex items-center gap-1.5 rounded-full bg-wait/12 px-2.5 py-1 text-[11px] font-semibold text-wait"
+                    title="Built and tested against recorded responses, not yet run against a live install"
+                  >
+                    Adapter built
                   </span>
                 ) : (
                   <span className="rounded-full border border-line px-2.5 py-1 text-[11px] font-medium text-muted">

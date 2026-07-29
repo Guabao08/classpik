@@ -22,8 +22,13 @@ import { composeAlertEmail, describe, recipientOf, type EmailIdentity } from './
  * growing a worse nodemailer.
  */
 
-export type ConnectFn = (opts: { host: string; port: number; secure: boolean }) => Promise<Duplex>
-export type UpgradeFn = (socket: Duplex, servername: string) => Promise<Duplex>
+export type ConnectFn = (opts: {
+  host: string
+  port: number
+  secure: boolean
+  timeoutMs: number
+}) => Promise<Duplex>
+export type UpgradeFn = (socket: Duplex, servername: string, timeoutMs: number) => Promise<Duplex>
 
 export interface SmtpOptions extends EmailIdentity {
   host: string
@@ -35,9 +40,17 @@ export interface SmtpOptions extends EmailIdentity {
   pass?: string | null
   /** The name we announce in EHLO. */
   ehloName?: string
-  /** Per-command ceiling. RFC 5321 allows minutes; a notification worker should
-   * not wait that long, and a socket with no timeout is how the queue stalls. */
+  /** Ceiling on every step, the TCP connect and the TLS handshake included.
+   * RFC 5321 allows minutes; a notification worker should not wait that long,
+   * and a socket with no timeout is how the queue stalls. */
   timeoutMs?: number
+  /**
+   * Refuse to send anything over a socket nothing has encrypted. On by default.
+   * Turning it off is for a local sink such as Mailpit and nothing else: with
+   * it off, a relay that drops STARTTLS from its EHLO gets the student's
+   * address and the course they are watching in cleartext on the wire.
+   */
+  requireTls?: boolean
   connect?: ConnectFn
   upgrade?: UpgradeFn
   boundary?: () => string
@@ -68,6 +81,7 @@ export class SmtpTransport implements Transport {
   private readonly pass: string | null
   private readonly ehloName: string
   private readonly timeoutMs: number
+  private readonly requireTls: boolean
   private readonly connectImpl: ConnectFn
   private readonly upgradeImpl: UpgradeFn
   private readonly identity: EmailIdentity
@@ -81,6 +95,7 @@ export class SmtpTransport implements Transport {
     this.pass = opts.pass ?? null
     this.ehloName = opts.ehloName ?? hostname()
     this.timeoutMs = opts.timeoutMs ?? 20_000
+    this.requireTls = opts.requireTls ?? true
     this.connectImpl = opts.connect ?? defaultConnect
     this.upgradeImpl = opts.upgrade ?? defaultUpgrade
     this.identity = { from: opts.from, replyTo: opts.replyTo ?? null }
@@ -106,7 +121,12 @@ export class SmtpTransport implements Transport {
       throw new PermanentDeliveryError(`could not compose the alert email: ${describe(err)}`, err)
     }
 
-    const socket = await this.connectImpl({ host: this.host, port: this.port, secure: this.secure })
+    const socket = await this.connectImpl({
+      host: this.host,
+      port: this.port,
+      secure: this.secure,
+      timeoutMs: this.timeoutMs,
+    })
     const channel = new SmtpChannel(socket)
     try {
       await this.converse(channel, envelopeFrom, recipient, raw)
@@ -128,11 +148,25 @@ export class SmtpTransport implements Transport {
 
     if (!encrypted && caps.keywords.has('STARTTLS')) {
       await this.command(ch, 'STARTTLS', [220], 'STARTTLS')
-      await ch.upgrade(this.host, this.upgradeImpl)
+      await ch.upgrade(this.host, this.upgradeImpl, this.timeoutMs)
       // RFC 3207: both sides discard everything learned before TLS, so the
       // capability list has to be asked for again rather than reused.
       caps = await this.ehlo(ch)
       encrypted = true
+    }
+
+    // Before MAIL FROM, and independent of whether credentials are configured.
+    // Opportunistic STARTTLS decides on a pre-TLS EHLO, which is a reply an
+    // attacker on the path can rewrite, so a stripped `250-STARTTLS` line used
+    // to mean the whole message went out in the clear: the student's address in
+    // RCPT TO and in the To header, plus the course they are watching. Nothing
+    // in the exchange would have said so.
+    if (!encrypted && this.requireTls) {
+      throw new PermanentDeliveryError(
+        `refusing to talk to ${this.host}:${this.port} in the clear: the server offered no ` +
+          'STARTTLS. Use the implicit-TLS submission port, or set CLASSPIK_SMTP_REQUIRE_TLS=0 ' +
+          'if this really is a local sink'
+      )
     }
 
     if (this.user !== null && this.pass !== null) {
@@ -295,9 +329,9 @@ class SmtpChannel {
     })
   }
 
-  async upgrade(servername: string, upgradeImpl: UpgradeFn): Promise<void> {
+  async upgrade(servername: string, upgradeImpl: UpgradeFn, timeoutMs: number): Promise<void> {
     this.detach()
-    const next = await upgradeImpl(this.socket, servername)
+    const next = await upgradeImpl(this.socket, servername, timeoutMs)
     // Anything the server sent before the handshake is discarded along with the
     // capabilities it announced, because none of it was authenticated.
     this.buffer = ''
@@ -387,33 +421,63 @@ class SmtpChannel {
   }
 }
 
-const defaultConnect: ConnectFn = ({ host, port, secure }) =>
+/**
+ * Both of these are raced against a timer, and that is the whole point of them.
+ *
+ * `timeoutMs` covers reply reads, but a read only exists once a socket does. A
+ * relay that completes the TCP handshake and then never sends a ServerHello,
+ * which is what a half-dead load balancer or a blackholing firewall looks like,
+ * emits neither `secureConnect` nor `error`. The promise never settled, so
+ * `send` never settled, so `Dispatcher.flush` never settled, so the Runner's
+ * `running` latch stayed true and the service silently stopped polling every
+ * section and delivering on every channel until someone restarted it. One bad
+ * relay took the whole product down.
+ */
+const defaultConnect: ConnectFn = ({ host, port, secure, timeoutMs }) =>
   new Promise<Duplex>((resolve, reject) => {
     const socket = secure
       ? tlsConnect({ host, port, servername: host })
       : netConnect({ host, port })
+
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error(`timed out after ${timeoutMs}ms connecting to ${host}:${port}`))
+    }, timeoutMs)
+
     const onError = (err: Error): void => {
+      clearTimeout(timer)
       socket.destroy()
       reject(err)
     }
     socket.once('error', onError)
     socket.once(secure ? 'secureConnect' : 'connect', () => {
+      clearTimeout(timer)
       socket.off('error', onError)
       resolve(socket)
     })
   })
 
-const defaultUpgrade: UpgradeFn = (socket, servername) =>
+const defaultUpgrade: UpgradeFn = (socket, servername, timeoutMs) =>
   new Promise<Duplex>((resolve, reject) => {
     // rejectUnauthorized stays on. Turning it off to make a relay work is how a
     // STARTTLS connection quietly becomes a downgrade anybody can sit inside.
     const tlsSocket = tlsConnect({ socket, servername })
+
+    // setTimeout on the underlying socket does not cover the handshake, so this
+    // is a plain timer plus a destroy rather than socket.setTimeout.
+    const timer = setTimeout(() => {
+      tlsSocket.destroy()
+      reject(new Error(`timed out after ${timeoutMs}ms on the TLS handshake with ${servername}`))
+    }, timeoutMs)
+
     const onError = (err: Error): void => {
+      clearTimeout(timer)
       tlsSocket.destroy()
       reject(err)
     }
     tlsSocket.once('error', onError)
     tlsSocket.once('secureConnect', () => {
+      clearTimeout(timer)
       tlsSocket.off('error', onError)
       resolve(tlsSocket)
     })

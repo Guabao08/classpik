@@ -20,7 +20,7 @@ classpik monitor cli
 
   schools                       list configured schools
   terms <schoolId>              fetch available terms from the SIS
-  subjects <schoolId> <term>    fetch available subjects from the SIS
+  subjects <schoolId> <term>    fetch and record available subjects from the SIS
   seed <schoolId> <term>        create poll targets for the school's subjects
   targets                       show poll targets and their state
   stats                         counts across the service
@@ -112,9 +112,13 @@ async function main(argv: string[]): Promise<number> {
         const adapter = buildAdapters(new PoliteClient()).get(school.sis)
         if (!adapter) return fail(`no adapter for ${school.sis}`)
 
-        for (const s of await adapter.listSubjects(school, term)) {
-          console.log(`${s.code.padEnd(8)} ${s.description}`)
-        }
+        const found = await adapter.listSubjects(school, term)
+        // Stored, not just printed. This is the browsable catalogue, and
+        // recording it creates no polling work: a subject earns a poll target
+        // from demand, never from being in the list. See core/discovery.ts.
+        const { added } = repo.recordSubjects(school.id, term, found)
+        for (const s of found) console.log(`${s.code.padEnd(8)} ${s.description}`)
+        console.log(`\n${found.length} subject(s) recorded, ${added} new. None of them is polled yet.`)
         return 0
       }
 

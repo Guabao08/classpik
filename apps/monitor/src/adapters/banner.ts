@@ -46,6 +46,13 @@ interface BannerSectionDto {
   waitCapacity: number
   waitCount: number
   waitAvailable: number
+  /**
+   * The levels the section is open to. An array because a cross-listed section
+   * is genuinely open to more than one, and a scalar spelling is carried too
+   * because installs differ on which of these they populate.
+   */
+  levels?: string[] | null
+  levelDescription?: string | null
   faculty?: Array<{ displayName?: string | null }>
   meetingsFaculty?: Array<{
     meetingTime?: {
@@ -281,6 +288,7 @@ export function toRawSection(row: BannerSectionDto): RawSection {
     meetingDays: days,
     meetingTime: formatTime(meeting?.beginTime ?? null, meeting?.endTime ?? null),
     campus: row.campusDescription ?? null,
+    level: firstLevel(row),
 
     seats,
     capacity,
@@ -289,6 +297,33 @@ export function toRawSection(row: BannerSectionDto): RawSection {
     waitlistCap: num(row.waitCapacity),
     waitlistAvailable: num(row.waitAvailable),
   }
+}
+
+/**
+ * The section's academic level, or null if this install does not report one.
+ *
+ * Two narrowings worth stating rather than discovering later:
+ *
+ *  - A cross-listed section carries several levels and we keep the first, since
+ *    a section holds one level in our model. Banner lists the primary one
+ *    first, so this is right for the common case and wrong for a graduate
+ *    student searching a section whose primary level is undergraduate.
+ *  - Nothing is inferred when both fields are missing. Null means unclassified,
+ *    and an unclassified section is shown to every level rather than to none.
+ *
+ * Search has a matching filter upstream: `txt_level` on the searchResults
+ * endpoint, with the valid values coming from `classSearch/get_levels`. Passing
+ * it would let the registrar do this narrowing for us and cut what we page
+ * through, but it also splits one subject's fetch into one per level, which is
+ * the per-subject request economics this service is built on. Left unused
+ * deliberately, and noted here for the day a school needs it.
+ */
+function firstLevel(row: BannerSectionDto): string | null {
+  for (const level of row.levels ?? []) {
+    if (typeof level === 'string' && level.trim() !== '') return level.trim()
+  }
+  const scalar = row.levelDescription?.trim()
+  return scalar ? scalar : null
 }
 
 function num(v: unknown): number {

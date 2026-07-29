@@ -7,6 +7,7 @@ import {
   bearerToken,
   hashPassword,
   hashSessionToken,
+  KdfBusyError,
   lockoutMsFor,
   looksLikeEmail,
   MIN_PASSWORD_LENGTH,
@@ -21,7 +22,7 @@ import { authHeaders, setupEnv, signUp, SCHOOL_ID, TERM, TEST_PASSWORD, type Tes
 const raw = (over: Partial<RawSection> = {}): RawSection => ({
   crn: '30412', subject: 'MATH', courseNumber: '221', code: 'MATH 221',
   title: 'Linear Algebra', section: 'B', credits: 3, instructor: 'Whitfield',
-  meetingDays: 'MWF', meetingTime: '10:00a', campus: null,
+  meetingDays: 'MWF', meetingTime: '10:00a', campus: null, level: null,
   seats: 0, capacity: 90, enrollment: 90, waitlist: 14, waitlistCap: 25, waitlistAvailable: 11,
   ...over,
 })
@@ -31,86 +32,123 @@ const raw = (over: Partial<RawSection> = {}): RawSection => ({
 describe('password hashing', () => {
   const password = 'a-perfectly-fine-password'
 
-  it('produces a different hash every time for the same password', () => {
+  it('produces a different hash every time for the same password', async () => {
     // Equal hashes would mean no salt, which makes one rainbow table cover
     // every account that reused a common password.
-    expect(hashPassword(password)).not.toBe(hashPassword(password))
+    expect(await hashPassword(password)).not.toBe(await hashPassword(password))
   })
 
-  it('accepts the password it was built from', () => {
-    expect(verifyPassword(password, hashPassword(password))).toBe(true)
+  it('accepts the password it was built from', async () => {
+    expect(await verifyPassword(password, await hashPassword(password))).toBe(true)
   })
 
-  it('rejects a wrong password', () => {
-    expect(verifyPassword('not-the-password', hashPassword(password))).toBe(false)
+  it('rejects a wrong password', async () => {
+    expect(await verifyPassword('not-the-password', await hashPassword(password))).toBe(false)
   })
 
-  it('rejects a password differing only in case', () => {
-    expect(verifyPassword(password.toUpperCase(), hashPassword(password))).toBe(false)
+  it('rejects a password differing only in case', async () => {
+    expect(await verifyPassword(password.toUpperCase(), await hashPassword(password))).toBe(false)
   })
 
-  it('rejects a password that is a prefix of the real one', () => {
-    expect(verifyPassword(password.slice(0, -1), hashPassword(password))).toBe(false)
+  it('rejects a password that is a prefix of the real one', async () => {
+    expect(await verifyPassword(password.slice(0, -1), await hashPassword(password))).toBe(false)
   })
 
-  it('stores neither the password nor anything resembling it', () => {
-    const stored = hashPassword(password)
+  it('stores neither the password nor anything resembling it', async () => {
+    const stored = await hashPassword(password)
     expect(stored).not.toContain(password)
     expect(Buffer.from(stored).includes(Buffer.from(password))).toBe(false)
   })
 
-  it('records the cost parameters alongside the digest', () => {
-    const [scheme, n, r, p] = hashPassword(password).split('$')
+  it('records the cost parameters alongside the digest', async () => {
+    const [scheme, n, r, p] = (await hashPassword(password)).split('$')
     expect(scheme).toBe('scrypt')
     expect(Number(n)).toBeGreaterThanOrEqual(16_384)
     expect(Number(r)).toBeGreaterThan(0)
     expect(Number(p)).toBeGreaterThan(0)
   })
 
-  it('verifies against the parameters in the hash rather than the current default', () => {
+  it('verifies against the parameters in the hash rather than the current default', async () => {
     // A hash written under an older, cheaper cost must keep working, otherwise
     // raising the cost silently locks every existing account out.
     const salt = randomBytes(16)
     const key = scryptSync(password, salt, 32, { N: 1024, r: 8, p: 1 })
     const legacy = ['scrypt', 1024, 8, 1, salt.toString('base64'), key.toString('base64')].join('$')
-    expect(verifyPassword(password, legacy)).toBe(true)
-    expect(verifyPassword('wrong', legacy)).toBe(false)
+    expect(await verifyPassword(password, legacy)).toBe(true)
+    expect(await verifyPassword('wrong', legacy)).toBe(false)
   })
 
-  it('rejects a hash whose digest has been tampered with', () => {
-    const parts = hashPassword(password).split('$')
+  it('rejects a hash whose digest has been tampered with', async () => {
+    const parts = (await hashPassword(password)).split('$')
     const key = Buffer.from(parts[5]!, 'base64')
     key[0] = key[0]! ^ 0xff
     parts[5] = key.toString('base64')
-    expect(verifyPassword(password, parts.join('$'))).toBe(false)
+    expect(await verifyPassword(password, parts.join('$'))).toBe(false)
   })
 
-  it('rejects a hash whose salt has been swapped', () => {
-    const parts = hashPassword(password).split('$')
+  it('rejects a hash whose salt has been swapped', async () => {
+    const parts = (await hashPassword(password)).split('$')
     parts[4] = randomBytes(16).toString('base64')
-    expect(verifyPassword(password, parts.join('$'))).toBe(false)
+    expect(await verifyPassword(password, parts.join('$'))).toBe(false)
   })
 
-  it('returns false rather than throwing on a malformed stored hash', () => {
+  it('returns false rather than throwing on a malformed stored hash', async () => {
     for (const junk of ['', 'not-a-hash', 'scrypt$$$$$', 'bcrypt$1$2$3$a$b', 'scrypt$16384$8$1$onlyfive']) {
-      expect(verifyPassword(password, junk)).toBe(false)
+      expect(await verifyPassword(password, junk)).toBe(false)
     }
   })
 
-  it('returns false rather than throwing on absurd cost parameters', () => {
-    const parts = hashPassword(password).split('$')
+  it('returns false rather than throwing on absurd cost parameters', async () => {
+    const parts = (await hashPassword(password)).split('$')
     parts[1] = '999999999'
-    expect(verifyPassword(password, parts.join('$'))).toBe(false)
+    expect(await verifyPassword(password, parts.join('$'))).toBe(false)
     parts[1] = '0'
-    expect(verifyPassword(password, parts.join('$'))).toBe(false)
+    expect(await verifyPassword(password, parts.join('$'))).toBe(false)
     parts[1] = '-16384'
-    expect(verifyPassword(password, parts.join('$'))).toBe(false)
+    expect(await verifyPassword(password, parts.join('$'))).toBe(false)
   })
 
-  it('rejects a truncated digest, which scrypt would otherwise accept as a prefix', () => {
-    const parts = hashPassword(password).split('$')
+  it('rejects a truncated digest, which scrypt would otherwise accept as a prefix', async () => {
+    const parts = (await hashPassword(password)).split('$')
     parts[5] = Buffer.from(parts[5]!, 'base64').subarray(0, 16).toString('base64')
-    expect(verifyPassword(password, parts.join('$'))).toBe(false)
+    expect(await verifyPassword(password, parts.join('$'))).toBe(false)
+  })
+
+  it('hashes off the event loop, so a burst of them cannot stall the process', async () => {
+    // The regression: scryptSync held the loop for the whole ~40ms of each
+    // hash, and it is reachable from the unauthenticated login route. Eight of
+    // them back to back is a third of a second in which this single-process
+    // service answers nothing, polls nothing and delivers nothing.
+    let ticks = 0
+    const timer = setInterval(() => ticks++, 5)
+    try {
+      await Promise.all(Array.from({ length: 8 }, () => hashPassword(password)))
+    } finally {
+      clearInterval(timer)
+    }
+    expect(ticks).toBeGreaterThan(0)
+  })
+
+  it('keeps the work bounded rather than queueing it without limit', async () => {
+    // Four threads in the default libuv pool, so the useful concurrency is
+    // four; the cap is on the queue behind them, not on correctness.
+    const many = await Promise.all(Array.from({ length: 12 }, () => hashPassword(password)))
+    expect(new Set(many).size).toBe(12)
+    for (const hash of many) expect(await verifyPassword(password, hash)).toBe(true)
+  })
+
+  it('refuses work outright once the queue is full rather than growing it forever', async () => {
+    // Four slots plus a queue of 64. Past that, a fast refusal beats holding
+    // the memory: the server turns this into a 503, which says come back, where
+    // a 401 would tell a legitimate user their password was wrong.
+    const results = await Promise.allSettled(
+      Array.from({ length: 80 }, () => hashPassword(password))
+    )
+    const refused = results.filter(
+      (r) => r.status === 'rejected' && r.reason instanceof KdfBusyError
+    )
+    expect(refused.length).toBeGreaterThan(0)
+    expect(results.filter((r) => r.status === 'fulfilled').length).toBe(80 - refused.length)
   })
 })
 
@@ -277,7 +315,32 @@ describe('auth over HTTP', () => {
       const row = env.repo.findUserByEmail('alice@classpik.test')!
       expect(row.password_hash).not.toContain(TEST_PASSWORD)
       expect(row.password_hash.startsWith('scrypt$')).toBe(true)
-      expect(verifyPassword(TEST_PASSWORD, row.password_hash)).toBe(true)
+      expect(await verifyPassword(TEST_PASSWORD, row.password_hash)).toBe(true)
+    })
+
+    it('rate limits account creation from one address', async () => {
+      // Signup is free work done for a stranger, and every account is a key to
+      // the authenticated routes, so it cannot be unlimited.
+      const server2 = createApi({
+        repo: env.repo,
+        now: () => env.clock.now,
+        rateLimit: { signupsPerHour: 2 },
+      })
+      await new Promise<void>((r) => server2.listen(0, r))
+      const b2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`
+
+      const attempt = (n: number) =>
+        fetch(`${b2}/api/auth/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: `flood${n}@classpik.test`, password: TEST_PASSWORD }),
+        })
+
+      expect((await attempt(1)).status).toBe(201)
+      expect((await attempt(2)).status).toBe(201)
+      expect((await attempt(3)).status).toBe(429)
+
+      await new Promise<void>((r) => server2.close(() => r()))
     })
 
     it('stores only the digest of the session token', async () => {
@@ -336,9 +399,30 @@ describe('auth over HTTP', () => {
 
     it('locks the account once the attempt limit is reached', async () => {
       await failTimes(5)
-      const res = await login(alice.email, 'wrong-again')
+      expect(env.repo.getUser(alice.userId)!.locked_until).toBe(env.clock.now + lockoutMsFor(5))
+      // Observed through the correct password, which is the one case where
+      // saying "you are throttled" cannot tell a stranger the account exists.
+      const res = await login(alice.email, TEST_PASSWORD)
       expect(res.status).toBe(429)
       expect((await res.json() as any).error).toContain('too many')
+    })
+
+    it('answers a locked account exactly as it answers an address with no account', async () => {
+      // Six requests per address used to turn this into a bulk existence
+      // oracle: a registered address answered 429 on the sixth attempt and an
+      // unregistered one answered 401 every time.
+      await failTimes(5)
+      const locked = await login(alice.email, 'wrong-again')
+      const unknown = await login('does-not-exist@classpik.test', 'wrong-again')
+      expect(locked.status).toBe(401)
+      expect(unknown.status).toBe(401)
+      expect((await locked.json() as any).error).toBe((await unknown.json() as any).error)
+    })
+
+    it('does not reveal a lockout to a caller who never had the password', async () => {
+      await failTimes(5)
+      const res = await login(alice.email, 'still-wrong')
+      expect((await res.json() as any).error).not.toContain('too many')
     })
 
     it('refuses even the correct password while locked', async () => {
@@ -354,13 +438,29 @@ describe('auth over HTTP', () => {
       expect((await login(alice.email, TEST_PASSWORD)).status).toBe(200)
     })
 
-    it('lengthens the lockout for each failure past the limit', async () => {
+    it('forgets the failure count once a lockout window has elapsed', async () => {
+      // The counter used to fall only on a successful login, so an attacker who
+      // knew nothing but the address could send five bad passwords, wait out
+      // the window, and repeat: the lockout escalated to its one hour cap and
+      // stayed there, and the victim could not clear it because clearing it
+      // needed the login the lock was refusing.
       await failTimes(5)
       env.clock.now += lockoutMsFor(5) + 1
       await login(alice.email, 'wrong-once-more')
+
       const user = env.repo.getUser(alice.userId)!
-      expect(user.failed_logins).toBe(6)
-      expect(user.locked_until).toBe(env.clock.now + lockoutMsFor(6))
+      expect(user.failed_logins).toBe(1)
+      expect(user.locked_until).toBeNull()
+    })
+
+    it('cannot be held open indefinitely by a stranger who only knows the address', async () => {
+      for (let round = 0; round < 4; round++) {
+        await failTimes(5)
+        env.clock.now += lockoutMsFor(5) + 1
+      }
+      // The correct password works the moment the latest window expires, and
+      // the wait never grew beyond the first step.
+      expect((await login(alice.email, TEST_PASSWORD)).status).toBe(200)
     })
 
     it('clears the counter on a successful login', async () => {
@@ -376,6 +476,74 @@ describe('auth over HTTP', () => {
       await failTimes(5)
       expect((await login(alice.email, TEST_PASSWORD)).status).toBe(429)
       expect((await login(bob.email, TEST_PASSWORD)).status).toBe(200)
+    })
+
+    it('throttles a source address regardless of which accounts it names', async () => {
+      // The per-account lock cannot help against an attacker who supplies
+      // addresses that do not exist: there is no row to lock. This is the limit
+      // that covers the unknown-email branch, and it is the primary one.
+      const server2 = createApi({
+        repo: env.repo,
+        now: () => env.clock.now,
+        rateLimit: { authPerMinute: 3 },
+      })
+      await new Promise<void>((r) => server2.listen(0, r))
+      const b2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`
+
+      const attempt = (n: number) =>
+        fetch(`${b2}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: `ghost${n}@classpik.test`, password: 'whatever-long-enough' }),
+        })
+
+      expect((await attempt(1)).status).toBe(401)
+      expect((await attempt(2)).status).toBe(401)
+      expect((await attempt(3)).status).toBe(401)
+      const throttled = await attempt(4)
+      expect(throttled.status).toBe(429)
+      expect((await throttled.json() as any).error).toContain('this address')
+
+      // And it lets go once the window has passed, so a shared campus NAT is
+      // not locked out for the rest of the day.
+      env.clock.now += 60_000
+      expect((await attempt(5)).status).toBe(401)
+
+      await new Promise<void>((r) => server2.close(() => r()))
+    })
+
+    it('keeps answering other routes while a burst of logins is hashing', async () => {
+      // scryptSync ran on the event loop, so 30 concurrent logins for addresses
+      // that do not even exist serialised into more than a second during which
+      // the process answered nothing at all: not /health, not the poll loop,
+      // not notification dispatch. No account and no token were needed.
+      const server2 = createApi({
+        repo: env.repo,
+        now: () => env.clock.now,
+        rateLimit: { authPerMinute: 100 },
+      })
+      await new Promise<void>((r) => server2.listen(0, r))
+      const b2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`
+
+      const burst = Array.from({ length: 30 }, (_, i) =>
+        fetch(`${b2}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: `ghost${i}@classpik.test`, password: 'whatever-long-enough' }),
+        })
+      )
+
+      // Long enough that the burst is genuinely in flight before we ask.
+      await new Promise((r) => setTimeout(r, 25))
+      const started = Date.now()
+      const health = await fetch(`${b2}/health`)
+      const waited = Date.now() - started
+
+      expect(health.status).toBe(200)
+      expect(waited).toBeLessThan(600)
+      for (const res of await Promise.all(burst)) expect(res.status).toBe(401)
+
+      await new Promise<void>((r) => server2.close(() => r()))
     })
 
     it('does not lock out a session that is already open', async () => {

@@ -25,6 +25,7 @@ const SECTION_DTO = {
   waitCapacity: 25,
   waitCount: 14,
   waitAvailable: 11,
+  levels: ['Undergraduate'],
   faculty: [{ displayName: 'Whitfield, Dana' }],
   meetingsFaculty: [
     {
@@ -114,6 +115,28 @@ describe('toRawSection', () => {
       waitlistCap: 25,
       waitlistAvailable: 11,
     })
+  })
+
+  it('maps the section level, which is a registrar fact and not a preference', () => {
+    expect(toRawSection(SECTION_DTO as never).level).toBe('Undergraduate')
+  })
+
+  it('falls back to the scalar spelling installs differ on', () => {
+    const scalar = { ...SECTION_DTO, levels: [], levelDescription: 'Graduate' }
+    expect(toRawSection(scalar as never).level).toBe('Graduate')
+  })
+
+  it('keeps the first level of a cross-listed section', () => {
+    const both = { ...SECTION_DTO, levels: ['Graduate', 'Undergraduate'] }
+    expect(toRawSection(both as never).level).toBe('Graduate')
+  })
+
+  it('leaves a section unclassified rather than guessing a level for it', () => {
+    // Unclassified is shown to every level, so an install that reports nothing
+    // here loses no classes. Guessing "Undergraduate" would hide a graduate
+    // student's entire catalog behind a field we never saw.
+    const { levels: _levels, ...bare } = SECTION_DTO
+    expect(toRawSection(bare as never).level).toBeNull()
   })
 
   it('encodes meeting days as registrar letters, with R for Thursday', () => {

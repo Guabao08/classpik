@@ -3,11 +3,15 @@ import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import { createApi } from '../src/api/server.js'
 import { Poller } from '../src/core/poller.js'
+import { SubjectDiscovery } from '../src/core/discovery.js'
 import { ConsoleTransport, Dispatcher } from '../src/core/notify.js'
 import { FixtureAdapter, type FixtureSection } from '../src/adapters/fixture.js'
 import type { SisAdapter, SisId, RawSection } from '../src/adapters/types.js'
 import { sectionId } from '../src/core/repo.js'
-import { authHeaders, setupEnv, signUp, SCHOOL_ID, TERM, type TestAccount, type TestEnv } from './helpers.js'
+import { authHeaders, setupEnv, signUp, SCHOOL_ID, TERM, TEST_PASSWORD, type TestAccount, type TestEnv } from './helpers.js'
+
+/** Stands in for CLASSPIK_ADMIN_TOKEN. The operator-only routes need it. */
+const ADMIN_TOKEN = 'test-operator-token'
 
 const SECTIONS: FixtureSection[] = [
   { crn: '30412', subject: 'MATH', courseNumber: '221', title: 'Linear Algebra', section: 'B', seats: 0, capacity: 90, waitlist: 14, waitlistCap: 25 },
@@ -17,7 +21,7 @@ const SECTIONS: FixtureSection[] = [
 const raw = (over: Partial<RawSection> = {}): RawSection => ({
   crn: '30412', subject: 'MATH', courseNumber: '221', code: 'MATH 221',
   title: 'Linear Algebra', section: 'B', credits: 3, instructor: 'Whitfield',
-  meetingDays: 'MWF', meetingTime: '10:00a', campus: null,
+  meetingDays: 'MWF', meetingTime: '10:00a', campus: null, level: null,
   seats: 0, capacity: 90, enrollment: 90, waitlist: 14, waitlistCap: 25, waitlistAvailable: 11,
   ...over,
 })
@@ -40,11 +44,14 @@ describe('API', () => {
     const adapters = new Map<SisId, SisAdapter>([['banner9', new FixtureAdapter(SECTIONS)]])
     dispatcher = new Dispatcher(env.repo, [new ConsoleTransport(() => {})], { now: () => env.clock.now })
     const poller = new Poller(env.repo, adapters, dispatcher, { now: () => env.clock.now })
+    const discovery = new SubjectDiscovery(env.repo, adapters, { now: () => env.clock.now })
 
     server = createApi({
       repo: env.repo,
       poller,
       dispatcher,
+      discovery,
+      adminToken: ADMIN_TOKEN,
       corsOrigins: ['http://localhost:5173'],
       now: () => env.clock.now,
     })
@@ -196,6 +203,36 @@ describe('API', () => {
       expect((await res.json() as any).error).toContain('target')
     })
 
+    it('refuses a webhook aimed at the machine the server runs on', async () => {
+      // The server is the one that makes this request, so a loopback target is
+      // a way to reach services that assume network isolation, and an RFC1918
+      // or 169.254.169.254 target reaches the internal network and the cloud
+      // metadata endpoint. It used to be stored verbatim with no check at all.
+      for (const target of [
+        'http://127.0.0.1:6379/x',
+        'http://localhost:6379/x',
+        'https://10.0.0.5/hook',
+        'https://169.254.169.254/latest/meta-data/',
+        'https://192.168.1.1/hook',
+        'https://[::1]/hook',
+      ]) {
+        const res = await post('/api/watches', { sectionId: sid, channel: 'webhook', target })
+        expect(res.status, target).toBe(400)
+      }
+      expect((await (await get('/api/watches')).json() as any).watches).toHaveLength(0)
+    })
+
+    it('refuses plain HTTP even to a public host, since alerts carry schedule data', async () => {
+      const res = await post('/api/watches', { sectionId: sid, channel: 'webhook', target: 'http://hooks.test/x' })
+      expect(res.status).toBe(400)
+      expect((await res.json() as any).error).toContain('non-HTTPS')
+    })
+
+    it('accepts an ordinary HTTPS webhook', async () => {
+      const res = await post('/api/watches', { sectionId: sid, channel: 'webhook', target: 'https://hooks.test/abc' })
+      expect(res.status).toBe(201)
+    })
+
     it('rejects a malformed JSON body', async () => {
       const res = await fetch(`${base}/api/watches`, {
         method: 'POST',
@@ -238,18 +275,29 @@ describe('API', () => {
       expect(listed.watches[0].target).toBe(alice.email)
     })
 
-    it('accepts an explicit address other than the account address', async () => {
+    it('refuses to mail an address the account has not proved it controls', async () => {
+      // This was a mail bomb: any account could aim every seat change on any
+      // section at a stranger, sent from ClassPik's own domain, and the
+      // stranger had no route that could touch the watch.
       dispatcher.register(emailTransport)
-      await post('/api/watches', { sectionId: sid, channel: 'email', target: 'phone@example.edu' })
+      const res = await post('/api/watches', { sectionId: sid, channel: 'email', target: 'victim@university.edu' })
+      expect(res.status).toBe(403)
+      expect((await res.json() as any).error).toContain('address on your account')
+      expect((await (await get('/api/watches')).json() as any).watches).toHaveLength(0)
+    })
+
+    it('accepts the account address written out explicitly', async () => {
+      dispatcher.register(emailTransport)
+      const res = await post('/api/watches', { sectionId: sid, channel: 'email', target: alice.email.toUpperCase() })
+      expect(res.status).toBe(201)
       const listed = await (await get('/api/watches')).json() as any
-      expect(listed.watches[0].target).toBe('phone@example.edu')
+      expect(listed.watches[0].target).toBe(alice.email)
     })
 
     it('rejects an address that could never be delivered to', async () => {
       dispatcher.register(emailTransport)
       const res = await post('/api/watches', { sectionId: sid, channel: 'email', target: 'phone-at-example' })
-      expect(res.status).toBe(400)
-      expect((await res.json() as any).error).toContain('not a usable email address')
+      expect(res.status).toBe(403)
     })
 
     it('rejects an address carrying a line break, which is the header injection path', async () => {
@@ -257,7 +305,8 @@ describe('API', () => {
       const res = await post('/api/watches', {
         sectionId: sid, channel: 'email', target: 'a@b.test\r\nBcc: attacker@evil.test',
       })
-      expect(res.status).toBe(400)
+      expect(res.status).toBe(403)
+      expect((await (await get('/api/watches')).json() as any).watches).toHaveLength(0)
     })
   })
 
@@ -292,10 +341,54 @@ describe('API', () => {
   })
 
   describe('POST /api/poll', () => {
+    const asAdmin = (path: string) =>
+      fetch(`${base}${path}`, { method: 'POST', headers: { 'X-Admin-Token': ADMIN_TOKEN } })
+
     it('runs a cycle and reports what happened', async () => {
-      const body = await (await post('/api/poll')).json() as any
+      const body = await (await asAdmin('/api/poll')).json() as any
       expect(body).toHaveProperty('polled')
       expect(body).toHaveProperty('dispatch')
+    })
+
+    it('refuses an ordinary account, however new or old', async () => {
+      // Signup is free and a tick fans out to a registrar with no cooldown, so
+      // "has an account" was never authorisation for this: one signup plus a
+      // loop here is how our IP gets blocked, which is the outcome this route
+      // exists to avoid.
+      const res = await post('/api/poll')
+      expect(res.status).toBe(403)
+      const anonymous = await post('/api/poll', undefined, null)
+      expect(anonymous.status).toBe(403)
+    })
+
+    it('refuses a wrong operator token', async () => {
+      const res = await fetch(`${base}/api/poll`, {
+        method: 'POST',
+        headers: { 'X-Admin-Token': `${ADMIN_TOKEN}x` },
+      })
+      expect(res.status).toBe(403)
+    })
+
+    it('is disabled outright when no operator token is configured', async () => {
+      const server2 = createApi({ repo: env.repo, poller: undefined, now: () => env.clock.now })
+      await new Promise<void>((r) => server2.listen(0, r))
+      const b2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`
+      const res = await fetch(`${b2}/api/poll`, {
+        method: 'POST',
+        headers: { 'X-Admin-Token': ADMIN_TOKEN },
+      })
+      expect(res.status).toBe(403)
+      expect((await res.json() as any).error).toContain('CLASSPIK_ADMIN_TOKEN')
+      await new Promise<void>((r) => server2.close(() => r()))
+    })
+
+    it('holds a floor between two forced cycles, whoever is asking', async () => {
+      expect((await asAdmin('/api/poll')).status).toBe(200)
+      const immediate = await asAdmin('/api/poll')
+      expect(immediate.status).toBe(429)
+
+      env.clock.now += 30_000
+      expect((await asAdmin('/api/poll')).status).toBe(200)
     })
 
     it('detects an opening through the full stack', async () => {
@@ -307,26 +400,145 @@ describe('API', () => {
       const dispatcher = new Dispatcher(env.repo, [transport], { now: () => env.clock.now })
       const poller = new Poller(env.repo, adapters, dispatcher, { now: () => env.clock.now, random: () => 0.5 })
 
-      const server2 = createApi({ repo: env.repo, poller, dispatcher, now: () => env.clock.now })
+      const server2 = createApi({
+        repo: env.repo, poller, dispatcher, adminToken: ADMIN_TOKEN, now: () => env.clock.now,
+      })
       await new Promise<void>((r) => server2.listen(0, r))
       const b2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`
 
       // Same database, so alice's session is valid against this server too.
       const auth = authHeaders(alice.token)
-      await fetch(`${b2}/api/poll`, { method: 'POST', headers: auth })
+      const admin = { 'X-Admin-Token': ADMIN_TOKEN }
+      await fetch(`${b2}/api/poll`, { method: 'POST', headers: admin })
       await fetch(`${b2}/api/watches`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify({ sectionId: sectionId(SCHOOL_ID, TERM, '30412') }),
       })
 
       env.clock.now += 3_600_000
-      const result = await (await fetch(`${b2}/api/poll`, { method: 'POST', headers: auth })).json() as any
+      const result = await (await fetch(`${b2}/api/poll`, { method: 'POST', headers: admin })).json() as any
 
       expect(result.notificationsQueued).toBe(1)
       expect(result.dispatch.delivered).toBe(1)
       expect(transport.sent[0]!.title).toContain('MATH 221 B')
 
       await new Promise<void>((r) => server2.close(() => r()))
+    })
+  })
+
+  describe('subjects', () => {
+    beforeEach(() => {
+      env.repo.recordSubjects(SCHOOL_ID, TERM, [
+        { code: 'MATH', description: 'Mathematics' },
+        { code: 'ANTH', description: 'Anthropology' },
+      ])
+    })
+
+    it('lists the browsable catalogue without an account', async () => {
+      const body = await (await get(`/api/subjects?school=${SCHOOL_ID}&term=${TERM}`, null)).json() as any
+      expect(body.count).toBe(2)
+      expect(body.subjects.map((s: any) => s.code)).toEqual(['ANTH', 'MATH'])
+      // Nothing has been fetched yet, and the client is told so rather than
+      // being left to wonder why the subject has no sections.
+      expect(body.subjects.every((s: any) => s.seeded === false)).toBe(true)
+    })
+
+    it('needs a school, and 404s for one it does not have', async () => {
+      expect((await get('/api/subjects', null)).status).toBe(400)
+      expect((await get('/api/subjects?school=nope', null)).status).toBe(404)
+    })
+
+    it('seeds a browsed subject and reports that nothing is there yet', async () => {
+      const res = await post('/api/subjects/seed', { school: SCHOOL_ID, term: TERM, subject: 'ANTH' })
+      expect(res.status).toBe(202)
+      const body = await res.json() as any
+      expect(body).toMatchObject({ subject: 'ANTH', status: 'queued', sections: 0 })
+      expect(env.repo.getTarget(`${SCHOOL_ID}:${TERM}:ANTH`)).not.toBeNull()
+    })
+
+    it('marks the subject seeded so a second browse buys nothing', async () => {
+      await post('/api/subjects/seed', { school: SCHOOL_ID, term: TERM, subject: 'ANTH' })
+      const second = await post('/api/subjects/seed', { school: SCHOOL_ID, term: TERM, subject: 'ANTH' })
+      expect(second.status).toBe(200)
+      expect((await second.json() as any).status).toBe('already')
+
+      const listed = await (await get(`/api/subjects?school=${SCHOOL_ID}&term=${TERM}`, null)).json() as any
+      expect(listed.subjects.find((s: any) => s.code === 'ANTH').seeded).toBe(true)
+    })
+
+    it('refuses a subject the school does not publish', async () => {
+      // The gate that keeps this from being "make our server fetch whatever I
+      // name at a university".
+      const res = await post('/api/subjects/seed', { school: SCHOOL_ID, term: TERM, subject: 'FAKE' })
+      expect(res.status).toBe(404)
+      expect(env.repo.listTargets().map((t) => t.id)).not.toContain(`${SCHOOL_ID}:${TERM}:FAKE`)
+    })
+
+    it('takes an account, because it is the one browse that costs a request', async () => {
+      const res = await post('/api/subjects/seed', { school: SCHOOL_ID, term: TERM, subject: 'ANTH' }, null)
+      expect(res.status).toBe(401)
+      expect(env.repo.getTarget(`${SCHOOL_ID}:${TERM}:ANTH`)).toBeNull()
+    })
+
+    it('validates its arguments rather than seeding something surprising', async () => {
+      expect((await post('/api/subjects/seed', { term: TERM, subject: 'ANTH' })).status).toBe(400)
+      expect((await post('/api/subjects/seed', { school: SCHOOL_ID, subject: 'ANTH' })).status).toBe(400)
+      expect((await post('/api/subjects/seed', { school: SCHOOL_ID, term: TERM })).status).toBe(400)
+    })
+
+    it('caps how many subjects one address can open', async () => {
+      // A signed-in stranger walking a two hundred subject catalogue is the
+      // same doubled request rate we refuse everywhere else, just slower.
+      const limited = createApi({
+        repo: env.repo,
+        discovery: new SubjectDiscovery(env.repo, new Map(), { now: () => env.clock.now }),
+        now: () => env.clock.now,
+        rateLimit: { seedsPerHour: 1 },
+      })
+      await new Promise<void>((r) => limited.listen(0, r))
+      const b2 = `http://127.0.0.1:${(limited.address() as AddressInfo).port}`
+      const seed = (subject: string) =>
+        fetch(`${b2}/api/subjects/seed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders(alice.token) },
+          body: JSON.stringify({ school: SCHOOL_ID, term: TERM, subject }),
+        })
+
+      expect((await seed('ANTH')).status).toBe(202)
+      expect((await seed('MATH')).status).toBe(429)
+      await new Promise<void>((r) => limited.close(() => r()))
+    })
+
+    it('says so plainly when the server was not given a discovery to use', async () => {
+      const bare = createApi({ repo: env.repo, now: () => env.clock.now })
+      await new Promise<void>((r) => bare.listen(0, r))
+      const b2 = `http://127.0.0.1:${(bare.address() as AddressInfo).port}`
+      const res = await fetch(`${b2}/api/subjects/seed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(alice.token) },
+        body: JSON.stringify({ school: SCHOOL_ID, term: TERM, subject: 'ANTH' }),
+      })
+      expect(res.status).toBe(503)
+      await new Promise<void>((r) => bare.close(() => r()))
+    })
+  })
+
+  describe('caching', () => {
+    it('forbids an intermediary from storing a response carrying a session token', async () => {
+      const res = await post('/api/auth/login', { email: alice.email, password: TEST_PASSWORD }, null)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('cache-control')).toBe('no-store')
+    })
+
+    it('forbids storing one account\'s data and varies on the credential', async () => {
+      // A CDN keying on the URL alone would otherwise be free to hand alice's
+      // watch list to bob.
+      for (const path of ['/api/watches', '/api/auth/me', '/api/events']) {
+        const res = await get(path)
+        expect(res.status, path).toBe(200)
+        expect(res.headers.get('cache-control'), path).toBe('no-store')
+        expect(res.headers.get('vary')?.toLowerCase(), path).toContain('authorization')
+      }
     })
   })
 
@@ -358,7 +570,9 @@ describe('API', () => {
 
     it('varies on origin even when the origin is not allowed', async () => {
       const res = await fetch(`${base}/api/stats`, { headers: { Origin: 'https://evil.test' } })
-      expect(res.headers.get('vary')).toBe('Origin')
+      // Authorization rides along on every response now that a public route,
+      // /api/sections, answers differently depending on who is asking.
+      expect(res.headers.get('vary')).toBe('Origin, Authorization')
     })
   })
 })

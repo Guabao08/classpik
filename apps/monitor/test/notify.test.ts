@@ -15,7 +15,7 @@ import type { RawSection } from '../src/adapters/types.js'
 const raw = (over: Partial<RawSection> = {}): RawSection => ({
   crn: '30412', subject: 'MATH', courseNumber: '221', code: 'MATH 221',
   title: 'Linear Algebra', section: 'B', credits: 3, instructor: null,
-  meetingDays: null, meetingTime: null, campus: null,
+  meetingDays: null, meetingTime: null, campus: null, level: null,
   seats: 0, capacity: 90, enrollment: 90, waitlist: 14, waitlistCap: 25, waitlistAvailable: 11,
   ...over,
 })
@@ -76,16 +76,23 @@ describe('WebhookTransport', () => {
     body: 'Register now',
   } as NotificationPayload
 
+  /** Public DNS, injected, so the suite never resolves a name off the machine. */
+  const publicDns = async () => ['203.0.113.10']
+  const webhook = (fetchImpl?: typeof fetch, lookup = publicDns) =>
+    new WebhookTransport(fetchImpl ?? globalThis.fetch, 10_000, { lookup })
+
   it('POSTs JSON to the target', async () => {
-    let seen: { url: string; body: unknown } | null = null
+    let seen: { url: string; body: unknown; redirect: unknown } | null = null
     const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
-      seen = { url: String(url), body: JSON.parse(init.body as string) }
+      seen = { url: String(url), body: JSON.parse(init.body as string), redirect: init.redirect }
       return new Response('', { status: 200 })
     }) as unknown as typeof fetch
 
-    await new WebhookTransport(fetchImpl).send(payload, 'https://hooks.test/abc')
+    await webhook(fetchImpl).send(payload, 'https://hooks.test/abc')
     expect(seen!.url).toBe('https://hooks.test/abc')
     expect(seen!.body).toMatchObject({ type: 'seat_opened', title: 'MATH 221 B has a seat open' })
+    // A redirect is a second URL nobody validated, so it is never followed.
+    expect(seen!.redirect).toBe('manual')
   })
 
   it('requires a target', async () => {
@@ -100,14 +107,52 @@ describe('WebhookTransport', () => {
     await expect(new WebhookTransport().send(payload, 'http://evil.test/x')).rejects.toThrow(/non-HTTPS/)
   })
 
-  it('allows http on localhost for development', async () => {
+  it('refuses a private address by default, whatever the scheme', async () => {
+    // The server is the one making this request, so a loopback target reaches
+    // services that assume network isolation, and 169.254.169.254 is the cloud
+    // metadata endpoint. The response status came back through
+    // notifications.last_error, which made this a crude internal port scanner.
+    const never = (async () => {
+      throw new Error('should not have been fetched')
+    }) as unknown as typeof fetch
+    for (const target of [
+      'http://localhost:9999/hook',
+      'http://127.0.0.1:6379/x',
+      'https://10.0.0.5/hook',
+      'https://169.254.169.254/latest/meta-data/',
+      'https://172.16.4.4/hook',
+      'https://[fd00::1]/hook',
+      'https://sink.local/hook',
+    ]) {
+      await expect(new WebhookTransport(never).send(payload, target), target).rejects.toThrow(
+        /private address|non-HTTPS/
+      )
+    }
+  })
+
+  it('refuses a public name that resolves to a private address', async () => {
+    const never = (async () => {
+      throw new Error('should not have been fetched')
+    }) as unknown as typeof fetch
+    await expect(
+      webhook(never, async () => ['10.1.2.3']).send(payload, 'https://internal.evil.test/hook')
+    ).rejects.toThrow(/private address/)
+  })
+
+  it('allows http on localhost only when development mode is switched on', async () => {
     const fetchImpl = (async () => new Response('', { status: 200 })) as unknown as typeof fetch
-    await expect(new WebhookTransport(fetchImpl).send(payload, 'http://localhost:9999/hook')).resolves.toBeUndefined()
+    const dev = new WebhookTransport(fetchImpl, 10_000, { allowPrivateTargets: true })
+    await expect(dev.send(payload, 'http://localhost:9999/hook')).resolves.toBeUndefined()
+  })
+
+  it('treats a redirect as a failure rather than following it somewhere unvalidated', async () => {
+    const fetchImpl = (async () => new Response('', { status: 302 })) as unknown as typeof fetch
+    await expect(webhook(fetchImpl).send(payload, 'https://hooks.test/x')).rejects.toThrow(/redirect/)
   })
 
   it('throws on a non-2xx response so the queue retries', async () => {
     const fetchImpl = (async () => new Response('nope', { status: 500 })) as unknown as typeof fetch
-    await expect(new WebhookTransport(fetchImpl).send(payload, 'https://hooks.test/x')).rejects.toThrow(/500/)
+    await expect(webhook(fetchImpl).send(payload, 'https://hooks.test/x')).rejects.toThrow(/500/)
   })
 })
 
@@ -215,7 +260,11 @@ describe('Dispatcher', () => {
     env.repo.enqueueNotification(w2, e2)
     queue()
 
-    const d = new Dispatcher(env.repo, [consoleT, new WebhookTransport(fetchImpl)], { now: () => env.clock.now })
+    const d = new Dispatcher(
+      env.repo,
+      [consoleT, new WebhookTransport(fetchImpl, 10_000, { lookup: async () => ['203.0.113.10'] })],
+      { now: () => env.clock.now }
+    )
     const result = await d.flush()
 
     expect(result.delivered).toBe(2)
@@ -277,6 +326,28 @@ describe('Dispatcher', () => {
     const t = new ConsoleTransport(() => {})
     d.register(t)
     expect((await d.flush()).delivered).toBe(1)
+  })
+
+  it('delivers an alert for an event older than the recent-history window', async () => {
+    // The event used to be found by scanning the 200 most recent events for the
+    // section. A notification on the retry ladder for a section that churns
+    // past that window failed with "event N no longer exists", which is false:
+    // the row is still there, nothing deletes events, and the student lost the
+    // alert to a misleading error after five attempts.
+    const { eventId } = queue()
+    for (let i = 0; i < 220; i++) {
+      env.clock.now += 1_000
+      env.repo.recordEvent(sid, {
+        kind: 'capacity_changed', prevSeats: 1, newSeats: 1, prevWaitlist: 0, newWaitlist: 0,
+        detail: `churn ${i}`,
+      })
+    }
+    expect(env.repo.listEvents({ sectionId: sid, limit: 200 }).some((e) => e.id === eventId)).toBe(false)
+
+    const transport = new ConsoleTransport(() => {})
+    const d = new Dispatcher(env.repo, [transport], { now: () => env.clock.now })
+    expect((await d.flush()).delivered).toBe(1)
+    expect(transport.sent[0]!.event.id).toBe(eventId)
   })
 
   it('respects the flush limit', async () => {

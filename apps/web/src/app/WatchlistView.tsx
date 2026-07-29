@@ -1,17 +1,42 @@
 import { SeatBar, StatusPill } from '../components/ui'
-import type { Watch } from '../lib/api'
+import type { Channel, School, Watch } from '../lib/api'
 import type { Mode } from './AppShell'
 
+/**
+ * Every watch this account holds, in full.
+ *
+ * Deliberately not filtered by the school and term in the sidebar. A transfer
+ * student changes school on Monday, and a watchlist that hid Tuesday's watches
+ * would look exactly like a watchlist that lost them. Anything outside the
+ * current selection is labelled with the school it belongs to instead.
+ */
 export default function WatchlistView({
   watches,
   onToggle,
   onSetMode,
+  onSetChannel,
+  emailReady,
+  email,
+  currentSchool,
+  schools,
 }: {
   watches: Watch[]
   onToggle: (sectionId: string) => void
   onSetMode: (sectionId: string, mode: Mode) => void
+  onSetChannel: (sectionId: string, channel: Channel) => void
+  /** Whether the monitor has an email provider configured. */
+  emailReady: boolean
+  /** The account address, which is the only one alerts are ever sent to. */
+  email: string
+  /** What the sidebar is pointed at, used to label rather than to filter. */
+  currentSchool: string | null
+  /** Only to turn a school id into the name a student would recognise. */
+  schools: School[]
 }) {
   const autoCount = watches.filter((w) => w.mode === 'claim').length
+  const elsewhere = (schoolId: string) => currentSchool !== null && schoolId !== currentSchool
+  const nameOf = (schoolId: string) => schools.find((s) => s.id === schoolId)?.name ?? schoolId
+  const strayCount = watches.filter((w) => elsewhere(w.section.schoolId)).length
 
   return (
     <div className="px-9 py-8">
@@ -21,6 +46,8 @@ export default function WatchlistView({
           <p className="mt-1.5 text-sm text-muted">
             {watches.length} section{watches.length === 1 ? '' : 's'} watched, {autoCount} set to
             auto-claim.
+            {strayCount > 0 &&
+              ` ${strayCount} from another school, still being checked.`}
           </p>
         </div>
         {autoCount > 0 && (
@@ -39,15 +66,19 @@ export default function WatchlistView({
           <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted">
             Head to Find classes and hit Watch on any section. The monitor starts checking it on its
             next cycle.
+            {emailReady
+              ? ` Alerts can go to ${email}, the address on your account.`
+              : ' Alerts appear here in the app; this monitor has no email provider configured.'}
           </p>
         </div>
       ) : (
         <div className="panel overflow-hidden">
-          <div className="grid grid-cols-[1.7fr_1fr_0.85fr_1.2fr_auto] gap-4 border-b border-line px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted">
+          <div className="grid grid-cols-[1.6fr_0.9fr_0.8fr_1.1fr_1.1fr_auto] gap-4 border-b border-line px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted">
             <span>Course</span>
             <span>Seats</span>
             <span>Status</span>
             <span>When a seat opens</span>
+            <span>Alert me</span>
             <span />
           </div>
 
@@ -56,7 +87,7 @@ export default function WatchlistView({
             return (
               <div
                 key={w.id}
-                className="grid grid-cols-[1.7fr_1fr_0.85fr_1.2fr_auto] items-center gap-4 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2"
+                className="grid grid-cols-[1.6fr_0.9fr_0.8fr_1.1fr_1.1fr_auto] items-center gap-4 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2"
               >
                 <div className="min-w-0">
                   <div className="flex items-baseline gap-2">
@@ -69,6 +100,14 @@ export default function WatchlistView({
                     {s.title}
                     {s.meetingDays ? ` · ${s.meetingDays} ${s.meetingTime ?? ''}` : ''}
                   </div>
+                  {/* Named, not hidden. A watch from the school you left is
+                      still a watch, and it keeps being checked. */}
+                  {elsewhere(s.schoolId) && (
+                    <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-line bg-white/4 px-2 py-0.5 text-[10px] text-muted">
+                      <span className="h-1 w-1 rounded-full bg-wait" />
+                      {nameOf(s.schoolId)}
+                    </span>
+                  )}
                 </div>
 
                 <div>
@@ -98,6 +137,31 @@ export default function WatchlistView({
                       {m === 'notify' ? 'Notify me' : 'Claim it'}
                     </button>
                   ))}
+                </div>
+
+                <div className="flex gap-1 rounded-lg border border-line bg-white/3 p-1">
+                  {(['console', 'email'] as const).map((c) => {
+                    const disabled = c === 'email' && !emailReady
+                    return (
+                      <button
+                        key={c}
+                        onClick={() => onSetChannel(s.id, c)}
+                        disabled={disabled}
+                        title={
+                          disabled
+                            ? 'This monitor has no email provider configured'
+                            : c === 'email'
+                              ? `Sent to ${email}, the address on your account`
+                              : 'Shown in Alerts'
+                        }
+                        className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          w.channel === c ? 'bg-white/10 text-bright' : 'text-muted hover:text-bright'
+                        }`}
+                      >
+                        {c === 'console' ? 'In app' : 'Email'}
+                      </button>
+                    )
+                  })}
                 </div>
 
                 <button

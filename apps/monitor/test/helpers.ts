@@ -53,12 +53,14 @@ export const TEST_PASSWORD = 'correct-horse-battery-staple'
 export async function signUp(
   base: string,
   email: string,
-  password: string = TEST_PASSWORD
+  password: string = TEST_PASSWORD,
+  /** School, term and levels, which are chosen at signup and changeable later. */
+  prefs: { school?: string; term?: string; levels?: string[] } = {}
 ): Promise<TestAccount> {
   const res = await fetch(`${base}/api/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email, password, ...prefs }),
   })
   if (res.status !== 201) {
     throw new Error(`signup for ${email} failed: ${res.status} ${await res.text()}`)

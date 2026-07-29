@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto'
 
 /**
  * ClassPik's own accounts. These are OUR users, not school logins: nothing in
@@ -6,8 +6,14 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
  * `src/adapters`, so the "there is nowhere to put a school password" guarantee
  * in the README still holds.
  *
- * Everything is pure and synchronous so the policy can be tested without a
- * database or a socket. Storage lives in the repo, HTTP lives in the server.
+ * Nothing here touches a database or a socket, so the whole policy is testable
+ * on its own. Storage lives in the repo, HTTP lives in the server.
+ *
+ * The KDF is async, and that is not a style preference. `scryptSync` holds the
+ * event loop for the whole ~40ms of the hash, and it is reachable from the
+ * unauthenticated login and signup routes, so a few dozen concurrent requests
+ * for addresses that do not even exist stall polling, notification dispatch and
+ * every other route in this single-process service.
  */
 
 // scrypt over PBKDF2 because it is memory-hard, and over bcrypt because it is
@@ -34,13 +40,50 @@ const LOCKOUT_BASE_MS = 60_000
 const LOCKOUT_MAX_MS = 60 * 60_000
 
 /**
+ * libuv runs four threadpool threads by default, so five concurrent hashes buy
+ * nothing but a longer queue. The queue itself is capped because an unbounded
+ * one turns a flood of logins into unbounded memory instead of a fast refusal.
+ */
+const MAX_KDF_IN_FLIGHT = 4
+const MAX_KDF_QUEUED = 64
+
+/** Raised when the KDF queue is full. The caller should answer 503, not 401. */
+export class KdfBusyError extends Error {
+  constructor() {
+    super('too many password hashes in flight, try again shortly')
+    this.name = 'KdfBusyError'
+  }
+}
+
+let kdfActive = 0
+const kdfWaiters: Array<() => void> = []
+
+async function acquireKdfSlot(): Promise<void> {
+  if (kdfActive < MAX_KDF_IN_FLIGHT) {
+    kdfActive++
+    return
+  }
+  if (kdfWaiters.length >= MAX_KDF_QUEUED) throw new KdfBusyError()
+  await new Promise<void>((resolve) => kdfWaiters.push(resolve))
+  // The slot was handed over rather than released, so kdfActive already counts
+  // this caller. Decrementing and re-incrementing would leave a window where a
+  // fresh caller could push the count past the cap.
+}
+
+function releaseKdfSlot(): void {
+  const next = kdfWaiters.shift()
+  if (next) next()
+  else kdfActive--
+}
+
+/**
  * Encoded as `scrypt$N$r$p$salt$key`, all base64. The parameters travel with
  * the hash so they can be raised later without a flag day: old rows keep
  * verifying against the parameters they were written with.
  */
-export function hashPassword(password: string): string {
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(SALT_BYTES)
-  const key = derive(password, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)
+  const key = await derive(password, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P)
   return [
     'scrypt',
     SCRYPT_N,
@@ -52,7 +95,7 @@ export function hashPassword(password: string): string {
 }
 
 /** False for a wrong password and false for a stored hash we cannot parse. */
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const parts = stored.split('$')
   if (parts.length !== 6 || parts[0] !== 'scrypt') return false
 
@@ -71,8 +114,11 @@ export function verifyPassword(password: string, stored: string): boolean {
 
   let actual: Buffer
   try {
-    actual = derive(password, salt, n, r, p)
-  } catch {
+    actual = await derive(password, salt, n, r, p)
+  } catch (err) {
+    // A full KDF queue is a load signal, not a wrong password, so it has to
+    // travel rather than be flattened into "incorrect".
+    if (err instanceof KdfBusyError) throw err
     // Absurd parameters in a corrupted row must not take the process down.
     return false
   }
@@ -88,10 +134,12 @@ export function verifyPassword(password: string, stored: string): boolean {
  * microsecond and a login for a real one takes 35ms, which turns response time
  * into a free account-enumeration oracle.
  */
-let decoyHash: string | null = null
-export function burnPasswordWork(password: string): void {
+let decoyHash: Promise<string> | null = null
+export async function burnPasswordWork(password: string): Promise<void> {
+  // Held as the promise rather than the resolved string so two concurrent
+  // unknown-email logins share one decoy instead of racing to build two.
   decoyHash ??= hashPassword(randomBytes(24).toString('base64'))
-  verifyPassword(password, decoyHash)
+  await verifyPassword(password, await decoyHash)
 }
 
 /**
@@ -154,11 +202,24 @@ export function looksLikeEmail(raw: string): boolean {
   return domain.length >= 3 && domain.includes('.') && !domain.startsWith('.') && !domain.endsWith('.')
 }
 
-function derive(password: string, salt: Buffer, n: number, r: number, p: number): Buffer {
-  return scryptSync(password, salt, KEY_BYTES, {
-    N: n,
-    r,
-    p,
-    maxmem: Math.max(SCRYPT_MAXMEM, 128 * n * r * 2),
-  })
+/**
+ * The callback form, which runs on the libuv threadpool, behind a slot so the
+ * pool cannot be swamped. `scryptSync` would do the same work on the event loop
+ * thread and stop the poller for its whole duration.
+ */
+async function derive(password: string, salt: Buffer, n: number, r: number, p: number): Promise<Buffer> {
+  await acquireKdfSlot()
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      scrypt(
+        password,
+        salt,
+        KEY_BYTES,
+        { N: n, r, p, maxmem: Math.max(SCRYPT_MAXMEM, 128 * n * r * 2) },
+        (err, key) => (err ? reject(err) : resolve(key))
+      )
+    })
+  } finally {
+    releaseKdfSlot()
+  }
 }

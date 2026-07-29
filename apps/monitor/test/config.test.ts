@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConfigError, DEFAULT_POLLING, loadSchoolsFromDir, parseSchoolConfig } from '../src/config/schools.js'
 import { detectSis } from '../src/adapters/registry.js'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { registerSchool } from '../src/index.js'
+import { setupEnv, type TestEnv } from './helpers.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -123,5 +125,55 @@ describe('detectSis', () => {
   })
   it('returns null when it cannot tell', () => {
     expect(detectSis('https://example.edu/registration')).toBeNull()
+  })
+})
+
+describe('registerSchool', () => {
+  let env: TestEnv
+  beforeEach(() => { env = setupEnv() })
+  afterEach(() => env.close())
+
+  const lines: Array<{ msg: string; meta?: Record<string, unknown> }> = []
+  const log = (msg: string, meta?: Record<string, unknown>) => lines.push({ msg, meta })
+  beforeEach(() => { lines.length = 0 })
+
+  it('seeds a poll target per subject and term for a school whose terms are configured', () => {
+    // Starting the service used to store the school and stop there, so an
+    // enabled school logged "school loaded" and then polled nothing at all,
+    // forever, with zero requests and zero errors to show for it.
+    const school = parseSchoolConfig(
+      {
+        id: 'test-peoplesoft',
+        name: 'Test PeopleSoft University',
+        sis: 'peoplesoft',
+        baseUrl: 'https://sis.test.invalid',
+        peoplesoft: {
+          scriptPath: '/psc/exprd/EMPLOYEE/SA/s/',
+          institution: 'EX001',
+          terms: [{ code: '1252', description: 'Spring 2025' }],
+        },
+        subjects: ['MATH', 'CS'],
+      },
+      'test'
+    )
+
+    expect(registerSchool(env.repo, school, log)).toBe(2)
+    expect(env.repo.listTargets().map((t) => t.id)).toEqual([
+      'test-peoplesoft:1252:CS',
+      'test-peoplesoft:1252:MATH',
+    ])
+    // And the terms are published, so GET /api/schools is not empty either.
+    expect(env.repo.listTerms('test-peoplesoft')).toEqual([{ code: '1252', description: 'Spring 2025' }])
+  })
+
+  it('says so loudly when a school ends up with nothing to poll', () => {
+    // Banner carries no term list in config, so its targets come from the CLI.
+    // The failure this warns about is invisible everywhere else.
+    const school = parseSchoolConfig(valid, 'test')
+    expect(registerSchool(env.repo, school, log)).toBe(0)
+
+    const warning = lines.find((l) => l.msg.includes('no poll targets'))
+    expect(warning).toBeDefined()
+    expect(String(warning!.meta!.fix)).toContain('seed example-university')
   })
 })

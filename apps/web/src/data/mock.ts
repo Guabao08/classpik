@@ -1,4 +1,6 @@
-// Placeholder data for the landing page. Replaced by the monitor API in Phase 1.
+// Invented rows, for the landing page illustration only. Nothing here is a
+// measurement, and the section that renders them says so on the page. The real
+// watchlist lives at /#app and comes from GET /api/watches.
 
 export type Status = 'open' | 'full' | 'waitlist'
 

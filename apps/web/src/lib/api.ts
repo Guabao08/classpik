@@ -33,6 +33,12 @@ export interface Section {
   instructor: string | null
   meetingDays: string | null
   meetingTime: string | null
+  /**
+   * Academic level in the registrar's own code, e.g. `UGRD`. Null where the
+   * school publishes none, which is why nothing here may treat null as
+   * undergraduate: an unclassified section belongs to every level.
+   */
+  level: string | null
   seats: number
   capacity: number
   enrollment: number
@@ -42,6 +48,9 @@ export interface Section {
   lastPolledAt: number
   lastChangedAt: number | null
 }
+
+/** `console` is the in-app record. `email` needs the monitor to have a provider. */
+export type Channel = 'console' | 'email'
 
 export interface Watch {
   id: string
@@ -78,12 +87,56 @@ export interface Stats {
   events: number
   pollCount: number
   pendingNotifications: number
+  /**
+   * Delivery channels this monitor can actually use, e.g. `['console',
+   * 'email']`. The server advertises them so the UI can offer email only where
+   * it will be sent, rather than finding out from a rejected watch.
+   */
+  channels: string[]
 }
 
 export interface User {
   id: string
   email: string
   createdAt: number
+  /**
+   * Where this account is shopping. The monitor applies these to catalog search
+   * on its own, so a signed-in student sees their own school, term and levels
+   * without the client asking for them.
+   *
+   * Search only. The watchlist and the alerts ignore all three, which is what
+   * lets a transfer student keep every watch from their old school.
+   */
+  school: string | null
+  term: string | null
+  levels: string[]
+}
+
+export interface Term {
+  code: string
+  description: string
+}
+
+export interface School {
+  id: string
+  name: string
+  sis: string
+  enabled: boolean
+  subjects: string[]
+  terms: Term[]
+}
+
+/** A level a school actually publishes, with how many sections carry it. */
+export interface Level {
+  level: string
+  sections: number
+}
+
+/** What the monitor narrowed a search to, echoed back so the UI can show it. */
+export interface SearchScope {
+  school: string | null
+  term: string | null
+  levels: string[]
 }
 
 export interface Session {
@@ -172,30 +225,50 @@ export const api = {
 
   stats: () => call<Stats>('/api/stats'),
 
-  sections: (params: { q?: string; status?: string; school?: string; limit?: number } = {}) => {
+  // No school, term or level here on purpose. The monitor takes those from the
+  // account, the same way it takes the identity from the session, so the only
+  // way to change what a search covers is to change the account. That keeps one
+  // answer to "why am I seeing these classes" instead of two that can disagree.
+  sections: (params: { q?: string; status?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams()
     if (params.q) qs.set('q', params.q)
     if (params.status) qs.set('status', params.status)
-    if (params.school) qs.set('school', params.school)
     qs.set('limit', String(params.limit ?? 100))
-    return call<{ count: number; sections: Section[] }>(`/api/sections?${qs}`)
+    return call<{ count: number; scope: SearchScope; sections: Section[] }>(`/api/sections?${qs}`)
   },
+
+  schools: () => call<School[]>('/api/schools'),
+
+  // The levels a school publishes, which is where the boxes to tick come from.
+  // Asking the catalog rather than hardcoding a pair of them is the point: the
+  // codes are per institution, and a law or medical student is neither.
+  levels: (school: string, term?: string | null) => {
+    const qs = new URLSearchParams({ school })
+    if (term) qs.set('term', term)
+    return call<{ school: string; term: string | null; levels: Level[] }>(`/api/levels?${qs}`)
+  },
+
+  // A patch: send only what changed. null clears a field, which is how a
+  // student says "every school" rather than "leave it alone".
+  updatePreferences: (patch: { school?: string | null; term?: string | null; levels?: string[] | null }) =>
+    call<{ user: User }>('/api/auth/preferences', { method: 'POST', body: JSON.stringify(patch) }),
 
   // No userId on any of these: the monitor takes the account from the session,
   // so a client that passed one would only be guessing at its own identity.
   watches: () => call<{ watches: Watch[] }>('/api/watches'),
 
-  createWatch: (input: {
-    sectionId: string
-    mode?: 'notify' | 'claim'
-    channel?: string
-    target?: string
-  }) => call<{ watch: { id: string } }>('/api/watches', { method: 'POST', body: JSON.stringify(input) }),
+  // No `target`: the monitor sends email to the address on the account and
+  // nowhere else, so there is nothing for a client to supply. Creating a watch
+  // that already exists updates it, which is how the channel gets changed.
+  createWatch: (input: { sectionId: string; mode?: 'notify' | 'claim'; channel?: Channel }) =>
+    call<{ watch: { id: string } }>('/api/watches', { method: 'POST', body: JSON.stringify(input) }),
 
   deleteWatch: (id: string) =>
     call<{ ok: boolean }>(`/api/watches/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   events: (limit = 50) => call<{ events: EventItem[] }>(`/api/events?limit=${limit}`),
-
-  poll: () => call<{ polled: number; notificationsQueued: number }>('/api/poll', { method: 'POST' }),
 }
+
+// There is deliberately no `poll` here. Forcing a cycle fans out to a
+// registrar, so the monitor gates it on an operator token that a browser has no
+// business holding, and the loop polls on its own schedule anyway.

@@ -31,6 +31,7 @@ const SEARCH_ROW = {
   campus: 'MAIN',
   campus_descr: 'Main Campus',
   enrl_stat: 'C',
+  acad_career: 'UGRD',
   class_capacity: 90,
   enrollment_total: 90,
   enrollment_available: 0,
@@ -91,6 +92,8 @@ function stubHighPoint(
   opts: {
     search?: (page: number, url: URL) => Response
     subjects?: () => Response
+    /** Where the adapter reports skipped rows. Captured rather than printed. */
+    log?: (msg: string) => void
   } = {}
 ) {
   const calls: StubCall[] = []
@@ -120,7 +123,7 @@ function stubHighPoint(
   }) as unknown as typeof fetch
 
   const client = new PoliteClient({ fetchImpl, minRequestGapMs: 0, sleep: async () => {} })
-  return { adapter: new PeopleSoftAdapter(client), calls }
+  return { adapter: new PeopleSoftAdapter(client, opts.log ?? (() => {})), calls }
 }
 
 describe('toRawSection', () => {
@@ -137,6 +140,7 @@ describe('toRawSection', () => {
       meetingDays: 'MWF',
       meetingTime: '10:00a-10:50a',
       campus: 'Main Campus',
+      level: 'UGRD',
       seats: 0,
       capacity: 90,
       enrollment: 90,
@@ -144,6 +148,25 @@ describe('toRawSection', () => {
       waitlistCap: 25,
       waitlistAvailable: 11,
     })
+  })
+
+  it('maps Academic Career, which is what PeopleSoft calls academic level', () => {
+    expect(toRawSection({ ...SEARCH_ROW, acad_career: 'GRAD' }).level).toBe('GRAD')
+  })
+
+  it('prefers the career code over its description, since the code is the stable half', () => {
+    const both = { ...SEARCH_ROW, acad_career: 'UGRD', acad_career_descr: 'Undergraduate' }
+    expect(toRawSection(both).level).toBe('UGRD')
+    const descrOnly = { ...SEARCH_ROW, acad_career: '', acad_career_descr: 'Undergraduate' }
+    expect(toRawSection(descrOnly).level).toBe('Undergraduate')
+  })
+
+  it('leaves a row with no career unclassified rather than assuming one', () => {
+    // This field has never been seen on a live install. Unclassified sections
+    // are shown to every level, so being wrong here costs nothing; guessing
+    // would hide classes from whoever we guessed against.
+    const { acad_career: _career, ...bare } = SEARCH_ROW
+    expect(toRawSection(bare).level).toBeNull()
   })
 
   it('reads counts that arrive as strings alongside ones that arrive as numbers', () => {
@@ -198,6 +221,39 @@ describe('toRawSection', () => {
   it('raises on a row with no class number, because we could not key it', () => {
     const { class_nbr: _drop, ...row } = SEARCH_ROW
     expect(() => toRawSection(row)).toThrow(/class_nbr/)
+  })
+
+  it('treats a capacity of zero with no explicit availability as unreadable, not full', () => {
+    // PeopleSoft reports class_capacity 0 for uncapped and parent-capped
+    // sections, and a catalog rebuild can zero every count while still serving
+    // valid JSON with the right subject. Believing it would report those
+    // sections permanently full, and then flip every one of them from 0 to n on
+    // the next healthy poll, firing seat_opened for every watched section at
+    // the school at once.
+    expect(() =>
+      toRawSection({ class_nbr: 40002, subject: 'MATH', class_capacity: '0', enrollment_total: '0' })
+    ).toThrow(/no readable seat counts/)
+  })
+
+  it('still believes a registrar that says zero seats are available', () => {
+    const s = toRawSection({
+      class_nbr: 40003, subject: 'MATH', class_capacity: 0, enrollment_total: 0, enrollment_available: 0,
+    })
+    expect(s.seats).toBe(0)
+  })
+
+  it('does not manufacture free waitlist spots from a cap with no readable total', () => {
+    // waitlist_opened is notifiable, so this reached the student: a cap of 25
+    // with an unreadable total became "0 of 25 taken", and the next diff read
+    // as a waitlist reopening with 25 spots free that never opened.
+    const { wait_tot: _t, ...row } = SEARCH_ROW
+    const s = toRawSection(row)
+    expect(s.waitlistCap).toBe(0)
+    expect(s.waitlistAvailable).toBe(0)
+
+    const empty = toRawSection({ ...SEARCH_ROW, wait_tot: '' })
+    expect(empty.waitlistCap).toBe(0)
+    expect(empty.waitlistAvailable).toBe(0)
   })
 
   it('raises on a non-numeric seat count instead of coercing it to zero', () => {
@@ -455,11 +511,34 @@ describe('PeopleSoftAdapter', () => {
     // Either the filter was ignored, which would pull the whole term into one
     // subject's target, or this is not the install's code for that subject.
     const { adapter } = stubHighPoint({
-      search: () => jsonResponse({ classes: [{ ...SEARCH_ROW, subject: 'HIST' }] }),
+      search: (p) => jsonResponse({ classes: p === 1 ? [{ ...SEARCH_ROW, subject: 'HIST' }] : [] }),
     })
     await expect(adapter.fetchSections(psSchool(), '1252', 'MATH')).rejects.toThrow(
       /none carry that subject/
     )
+  })
+
+  it('does not kill the subject over one page that happens to hold only siblings', async () => {
+    // The install may implement the filter as subject_like, so a MATH search
+    // returns MATHBIO too. Judging the subject check per page meant a page that
+    // sorted the siblings together threw "none carry that subject" and the
+    // whole subject died, transiently, forever: every student watching any MATH
+    // section stopped getting alerts with no operator-visible signal.
+    const { adapter } = stubHighPoint({
+      search: (p) =>
+        jsonResponse({
+          classes:
+            p === 1
+              ? [SEARCH_ROW]
+              : p === 2
+                ? [{ ...SEARCH_ROW, class_nbr: 51001, subject: 'MATHBIO' }]
+                : p === 3
+                  ? [{ ...SEARCH_ROW, class_nbr: 51999, subject: 'MATH', class_section: 'C' }]
+                  : [],
+        }),
+    })
+    const out = await adapter.fetchSections(psSchool(), '1252', 'MATH')
+    expect(out.map((s) => s.crn)).toEqual(['30412', '51999'])
   })
 
   it('matches the requested subject without caring about case', async () => {
@@ -467,6 +546,53 @@ describe('PeopleSoftAdapter', () => {
       search: (p) => jsonResponse({ classes: p === 1 ? [{ ...SEARCH_ROW, subject: 'math' }] : [] }),
     })
     await expect(adapter.fetchSections(psSchool(), '1252', 'MATH')).resolves.toHaveLength(1)
+  })
+
+  it('keeps the readable rows on a page that also carries an unreadable one', async () => {
+    // One cancelled or administrative row with no seat counts used to throw out
+    // of the whole page. The error is transient, so the target retried and
+    // failed forever at maxIntervalMs and every student watching any section in
+    // that subject silently stopped being told about seats.
+    const skipped: string[] = []
+    const { adapter } = stubHighPoint({
+      log: (m) => skipped.push(m),
+      search: (p) =>
+        jsonResponse({
+          classes:
+            p === 1
+              ? [
+                  SEARCH_ROW,
+                  ...Array.from({ length: 38 }, (_, i) => ({ ...SEARCH_ROW, class_nbr: 60000 + i })),
+                  { class_nbr: 69999, subject: 'MATH', catalog_nbr: '221', descr: 'Cancelled' },
+                ]
+              : [],
+        }),
+    })
+
+    const out = await adapter.fetchSections(psSchool(), '1252', 'MATH')
+    expect(out).toHaveLength(39)
+    expect(out.some((s) => s.crn === '69999')).toBe(false)
+    expect(skipped.join(' ')).toContain('69999')
+  })
+
+  it('fails the page rather than dropping a large fraction of it', async () => {
+    // A skipped row is stored as absent, and its return diffs as prev = null,
+    // which yields section_added and swallows exactly one seat_opened. So the
+    // threshold is tight: losing a tenth of a page is worse than a retry.
+    const { adapter } = stubHighPoint({
+      search: () =>
+        jsonResponse({
+          classes: [
+            SEARCH_ROW,
+            { class_nbr: 69998, subject: 'MATH' },
+            { class_nbr: 69999, subject: 'MATH' },
+          ],
+        }),
+    })
+    await expect(adapter.fetchSections(psSchool(), '1252', 'MATH')).rejects.toMatchObject({
+      name: 'SisError',
+      transient: true,
+    })
   })
 
   it('raises when a page repeats the previous one, rather than truncating the subject', async () => {

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FixtureAdapter, type FixtureSection } from '../src/adapters/fixture.js'
 import { SisError, type SisAdapter, type SisId } from '../src/adapters/types.js'
-import { Poller } from '../src/core/poller.js'
+import { Poller, Runner } from '../src/core/poller.js'
+import { SubjectDiscovery } from '../src/core/discovery.js'
 import { ConsoleTransport, Dispatcher } from '../src/core/notify.js'
 import { sectionId } from '../src/core/repo.js'
 import { setupEnv, SCHOOL_ID, TERM, type TestEnv } from './helpers.js'
@@ -341,5 +342,125 @@ describe('Poller', () => {
     expect(transport.sent).toHaveLength(1)
     expect(transport.sent[0]!.title).toBe('MATH 221 B has a seat open')
     expect(transport.sent[0]!.userId).toBe('roshan')
+  })
+})
+
+describe('Runner', () => {
+  let env: TestEnv
+  beforeEach(() => { env = setupEnv() })
+  afterEach(() => env.close())
+
+  /** A dispatcher whose flush never settles, which is what a wedged relay looks like. */
+  const wedgedDispatcher = () =>
+    ({ flush: () => new Promise<never>(() => {}) }) as unknown as Dispatcher
+
+  it('keeps ticking after a flush that never settles', async () => {
+    // The regression, and it took the whole product down: a transport that hung
+    // left `running` true forever, so every later tick returned at that guard.
+    // The process stayed up and /api/stats looked healthy while the service
+    // polled nothing and delivered nothing until someone restarted it.
+    const { poller } = build(env, new FixtureAdapter(SECTIONS))
+    let ticks = 0
+    const counting = {
+      tick: async () => {
+        ticks++
+        return { polled: 0, outcomes: [], notificationsQueued: 0 }
+      },
+    } as unknown as Poller
+    void poller
+
+    const runner = new Runner(counting, wedgedDispatcher(), {
+      tickIntervalMs: 10,
+      tickBudgetMs: 30,
+      log: () => {},
+    })
+    runner.start()
+    await new Promise((r) => setTimeout(r, 250))
+    await runner.stop()
+
+    expect(ticks).toBeGreaterThan(1)
+  })
+
+  it('fills the browsable subject catalogue as it runs, and polls none of it', async () => {
+    env.repo.replaceTerms(SCHOOL_ID, [{ code: TERM, description: 'Fall 2026' }])
+    const adapter = new FixtureAdapter(SECTIONS)
+    const { poller, dispatcher } = build(env, adapter)
+    const discovery = new SubjectDiscovery(
+      env.repo,
+      new Map<SisId, SisAdapter>([['banner9', adapter]]),
+      { now: () => env.clock.now }
+    )
+    const runner = new Runner(poller, dispatcher, {
+      tickIntervalMs: 10,
+      now: () => env.clock.now,
+      discovery,
+      log: () => {},
+    })
+    runner.start()
+    await new Promise((r) => setTimeout(r, 60))
+    await runner.stop()
+
+    expect(env.repo.listSubjects(SCHOOL_ID, TERM).map((s) => s.code)).toEqual(['CS', 'MATH'])
+    // Knowing a subject exists is not permission to poll it. Everything else
+    // about this feature depends on that staying true.
+    expect(env.repo.listTargets()).toEqual([])
+    expect(adapter.pollCount('MATH')).toBe(0)
+    expect(adapter.pollCount('CS')).toBe(0)
+  })
+
+  it('does not re-ask a registrar for its subject list on every tick', async () => {
+    env.repo.replaceTerms(SCHOOL_ID, [{ code: TERM, description: 'Fall 2026' }])
+    let calls = 0
+    const counting: SisAdapter = {
+      id: 'banner9',
+      listTerms: async () => [],
+      listSubjects: async () => {
+        calls++
+        return [{ code: 'MATH', description: 'Mathematics' }]
+      },
+      fetchSections: async () => [],
+    }
+    const { poller, dispatcher } = build(env, counting)
+    const runner = new Runner(poller, dispatcher, {
+      tickIntervalMs: 5,
+      now: () => env.clock.now,
+      discovery: new SubjectDiscovery(
+        env.repo,
+        new Map<SisId, SisAdapter>([['banner9', counting]]),
+        { now: () => env.clock.now }
+      ),
+      discoveryIntervalMs: 24 * 60 * 60_000,
+      log: () => {},
+    })
+    runner.start()
+    await new Promise((r) => setTimeout(r, 80))
+    await runner.stop()
+
+    // Many ticks, one catalogue request. A subject list changes between terms,
+    // not between ticks.
+    expect(calls).toBe(1)
+  })
+
+  it('prunes expired sessions as it goes, since nothing else ever did', async () => {
+    // One row per login, kept for the life of the database otherwise.
+    const user = env.repo.createUser({
+      email: 'ada@classpik.test', emailNorm: 'ada@classpik.test', passwordHash: 'scrypt$not-used-here',
+    })!
+    env.repo.createSession({ userId: user.id, tokenHash: 'dead', expiresAt: env.clock.now - 1 })
+    env.repo.createSession({ userId: user.id, tokenHash: 'live', expiresAt: env.clock.now + 60_000 })
+
+    const { poller, dispatcher } = build(env, new FixtureAdapter(SECTIONS))
+    const runner = new Runner(poller, dispatcher, {
+      tickIntervalMs: 10_000,
+      now: () => env.clock.now,
+      repo: env.repo,
+      log: () => {},
+    })
+    runner.start()
+    await new Promise((r) => setTimeout(r, 50))
+    await runner.stop()
+
+    expect(env.repo.getSession('dead')).toBeNull()
+    expect(env.repo.getSession('live')).not.toBeNull()
   })
 })

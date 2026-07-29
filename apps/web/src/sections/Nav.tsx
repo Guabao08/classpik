@@ -10,15 +10,16 @@ export default function Nav() {
           <a className="transition hover:text-bright" href="#watchlist">Watchlist</a>
           <a className="transition hover:text-bright" href="#schools">Schools</a>
         </div>
+        {/* The two real doors: one for people who already have an account, one
+            for everyone else. Both used to be href="#app", which was a screen
+            that showed a sign-in form to a visitor who had not been asked to
+            make an account yet. */}
         <div className="flex items-center gap-3">
-          <a
-            href="#app"
-            className="text-sm text-muted transition hover:text-bright"
-          >
-            Open app
+          <a href="/login" className="text-sm text-muted transition hover:text-bright">
+            Sign in
           </a>
           <a
-            href="#waitlist"
+            href="/signup"
             className="rounded-full bg-open px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110"
           >
             Get early access

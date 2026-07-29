@@ -72,18 +72,27 @@ export function emailFromEnv(env: NodeJS.ProcessEnv = process.env): EmailSetup |
     throw new Error('CLASSPIK_SMTP_USER and CLASSPIK_SMTP_PASS must be set together')
   }
 
+  // Encryption is required unless an operator explicitly gives it up. It is a
+  // separate variable from the credentials on purpose: an unauthenticated
+  // internal relay is an ordinary configuration, and it used to fall straight
+  // through to a cleartext send whenever the EHLO reply omitted STARTTLS.
+  const requireTls = !falsy(env.CLASSPIK_SMTP_REQUIRE_TLS)
+
   return {
     provider,
     transport: new SmtpTransport({
       host,
       port,
       secure: !starttls,
+      requireTls,
       user,
       pass,
       from,
       replyTo,
     }),
-    detail: `smtp ${host}:${port} ${starttls ? 'starttls' : 'implicit tls'} as ${from}`,
+    detail:
+      `smtp ${host}:${port} ${starttls ? 'starttls' : 'implicit tls'} as ${from}` +
+      (requireTls ? '' : ' (TLS NOT REQUIRED, cleartext send is allowed)'),
   }
 }
 
@@ -103,4 +112,10 @@ function optional(env: NodeJS.ProcessEnv, name: string): string | null {
 function truthy(value: string | undefined): boolean {
   const v = (value ?? '').trim().toLowerCase()
   return v === '1' || v === 'true' || v === 'yes'
+}
+
+/** Only an explicit no counts. Unset, empty, or anything else keeps the safe default. */
+function falsy(value: string | undefined): boolean {
+  const v = (value ?? '').trim().toLowerCase()
+  return v === '0' || v === 'false' || v === 'no'
 }

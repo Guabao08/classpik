@@ -179,6 +179,80 @@ const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [
       CREATE INDEX idx_sessions_expiry ON sessions (expires_at);
     `,
   },
+  {
+    version: 3,
+    name: 'subjects and leases',
+    sql: `
+      -- Every subject a school offers in a term, as the SIS reports it.
+      --
+      -- This is a browsing catalogue, NOT a poll list. A large university has
+      -- upwards of two hundred subject codes, and polling all of them because
+      -- we happen to know their names is exactly the impolite behaviour the
+      -- per-subject design exists to avoid. A row here costs zero requests.
+      -- What turns a subject into upstream traffic is seeded_at, and only a
+      -- deliberate human action sets that: see Repo.markSubjectSeeded.
+      CREATE TABLE subjects (
+        school_id     TEXT NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+        term          TEXT NOT NULL,
+        code          TEXT NOT NULL,
+        description   TEXT NOT NULL,
+        discovered_at INTEGER NOT NULL,
+        -- When someone first browsed this subject and we granted it the one
+        -- fetch that makes its sections watchable. NULL means we know the
+        -- subject exists and have never asked the registrar about it.
+        seeded_at     INTEGER,
+        PRIMARY KEY (school_id, term, code)
+      );
+
+      -- Target leasing, which is what lets more than one poller share a
+      -- database without both of them fetching the same subject and doubling
+      -- our request rate at a registrar. The expiry is the important half: a
+      -- worker that dies mid-poll must not hold a target forever.
+      ALTER TABLE poll_targets ADD COLUMN lease_owner TEXT;
+      ALTER TABLE poll_targets ADD COLUMN lease_expires_at INTEGER;
+
+      DROP INDEX idx_targets_due;
+      CREATE INDEX idx_targets_due ON poll_targets (active, next_poll_at, lease_expires_at);
+    `,
+  },
+  {
+    version: 4,
+    name: 'scoping',
+    sql: `
+      -- Which catalogue a student is actually shopping in. Search defaults to
+      -- these three, so that an undergraduate at one university does not get a
+      -- blended list of two universities' classes the day a second school is
+      -- configured. The watchlist and the alerts deliberately ignore all of
+      -- them: see Repo.listWatches.
+      --
+      -- No foreign key on school_id. A student who transfers keeps an account
+      -- pointing at a school we may later stop carrying, and a reference would
+      -- either block removing that school or take the preference with it.
+      ALTER TABLE users ADD COLUMN school_id TEXT;
+      ALTER TABLE users ADD COLUMN term TEXT;
+      -- A JSON array of level codes. A list rather than one value, because a
+      -- senior takes a graduate seminar, a graduate student takes an
+      -- undergraduate prerequisite, and a law or medical student is neither of
+      -- the two options a boolean would have offered. A column rather than a
+      -- join table, because this set is only ever read and written whole, one
+      -- per account, and a second table would buy a join on every search for
+      -- nothing.
+      ALTER TABLE users ADD COLUMN levels TEXT NOT NULL DEFAULT '[]';
+
+      -- Level belongs to the section, not to the account reading it: it is what
+      -- the registrar publishes about who may enrol. level keeps the
+      -- registrar's own spelling for display, level_norm is the only thing ever
+      -- compared, so UGRD and ugrd are one level rather than two. Neither is
+      -- constrained to a set of values, because the set is per institution and
+      -- an enum here would silently hide every level we had not enumerated.
+      ALTER TABLE sections ADD COLUMN level TEXT;
+      ALTER TABLE sections ADD COLUMN level_norm TEXT;
+
+      -- Exactly what catalog search filters on, in the order it filters: one
+      -- school, one term, then the levels the student ticked.
+      CREATE INDEX idx_sections_scope ON sections (school_id, term, level_norm);
+    `,
+  },
 ]
 
 export function openDb(path = ':memory:'): Db {
@@ -220,15 +294,64 @@ export function migrate(db: Db): MigrationsResult {
   return { from, to, applied }
 }
 
-/** Run `fn` in a transaction, rolling back if it throws. */
+/**
+ * Nesting depth per database handle, so `tx` can tell an outermost call from an
+ * inner one. A WeakMap rather than a field because `Db` is node:sqlite's type
+ * and not ours to extend.
+ */
+const txDepth = new WeakMap<Db, number>()
+
+/**
+ * Run `fn` in a transaction, rolling back if it throws. Reentrant.
+ *
+ * The nesting matters. SQLite has no nested BEGIN, so an inner `tx` used to
+ * throw "cannot start a transaction within a transaction" at its own BEGIN, and
+ * then the inner catch issued a ROLLBACK that tore down the OUTER transaction
+ * and threw a second time from the rollback itself. The caller saw a confusing
+ * SQLITE_ERROR about transaction nesting instead of whatever really failed, and
+ * the outer writes were gone. An inner call now uses a SAVEPOINT, which is the
+ * one construct SQLite does nest, so an inner failure unwinds only its own work
+ * and the real error is what propagates.
+ */
 export function tx<T>(db: Db, fn: () => T): T {
-  db.exec('BEGIN')
+  // isTransaction covers a transaction someone opened without going through
+  // here, which our own counter cannot see.
+  const depth = txDepth.get(db) ?? 0
+  const nested = depth > 0 || db.isTransaction
+
+  if (!nested) {
+    db.exec('BEGIN')
+    txDepth.set(db, 1)
+    try {
+      const out = fn()
+      db.exec('COMMIT')
+      return out
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    } finally {
+      txDepth.set(db, 0)
+    }
+  }
+
+  // Savepoint names are not parameterisable, so this is built rather than
+  // bound. It is a depth counter, never anything a caller supplies.
+  const name = `classpik_sp_${depth}`
+  db.exec(`SAVEPOINT ${name}`)
+  txDepth.set(db, depth + 1)
   try {
     const out = fn()
-    db.exec('COMMIT')
+    // RELEASE is the savepoint form of COMMIT: it merges this level's work into
+    // the enclosing transaction rather than writing anything to disk.
+    db.exec(`RELEASE ${name}`)
     return out
   } catch (err) {
-    db.exec('ROLLBACK')
+    // ROLLBACK TO leaves the savepoint on the stack, so it needs releasing too
+    // or the next sibling call reuses a name that is still open.
+    db.exec(`ROLLBACK TO ${name}`)
+    db.exec(`RELEASE ${name}`)
     throw err
+  } finally {
+    txDepth.set(db, depth)
   }
 }

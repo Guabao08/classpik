@@ -16,6 +16,7 @@ const section = (over: Partial<RawSection> = {}): RawSection => ({
   meetingDays: 'MWF',
   meetingTime: '10:00a',
   campus: null,
+  level: null,
   seats: 0,
   capacity: 90,
   enrollment: 90,
@@ -44,18 +45,59 @@ describe('migrations', () => {
     db.prepare(
       'INSERT INTO schools (id,name,sis,base_url,enabled,config_json,created_at) VALUES (?,?,?,?,?,?,?)'
     ).run('s1', 'S', 'banner9', 'https://s.invalid', 1, '{}', 0)
+    db.prepare(
+      `INSERT INTO poll_targets (id,school_id,term,subject,interval_ms,next_poll_at,created_at)
+       VALUES (?,?,?,?,?,?,?)`
+    ).run('s1:202608:MATH', 's1', '202608', 'MATH', 60_000, 0, 0)
+    db.prepare(
+      `INSERT INTO sections (
+         id,target_id,school_id,term,crn,subject,course_number,code,title,section,
+         seats,capacity,enrollment,waitlist,waitlist_cap,waitlist_available,status,
+         first_seen_at,last_polled_at
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      's1:202608:10001', 's1:202608:MATH', 's1', '202608', '10001', 'MATH', '221',
+      'MATH 221', 'Linear Algebra', 'A', 0, 90, 90, 5, 20, 15, 'full', 0, 0
+    )
 
-    // Rewind the recorded version so the accounts migration runs again over
-    // populated tables, as it would on an instance that predates it.
+    // Rewind the schema all the way back to version 1 so every later migration
+    // runs again over populated tables, as each did on an instance that
+    // predates it. Undoing the lease and level columns needs their indexes
+    // dropped first, because SQLite refuses to drop a column an index still
+    // refers to.
     db.exec('DROP TABLE users')
     db.exec('DROP TABLE sessions')
+    db.exec('DROP TABLE subjects')
+    db.exec('DROP INDEX idx_sections_scope')
+    db.exec('ALTER TABLE sections DROP COLUMN level')
+    db.exec('ALTER TABLE sections DROP COLUMN level_norm')
+    db.exec('DROP INDEX idx_targets_due')
+    db.exec('ALTER TABLE poll_targets DROP COLUMN lease_owner')
+    db.exec('ALTER TABLE poll_targets DROP COLUMN lease_expires_at')
+    db.exec('CREATE INDEX idx_targets_due ON poll_targets (active, next_poll_at)')
     db.prepare('UPDATE schema_version SET version = ?').run(1)
 
     const result = migrate(db)
     expect(result.from).toBe(1)
-    expect(result.applied).toEqual(['accounts'])
+    expect(result.applied).toEqual(['accounts', 'subjects and leases', 'scoping'])
     expect(db.prepare('SELECT COUNT(*) AS n FROM schools').get()).toEqual({ n: 1 })
     expect(db.prepare('SELECT COUNT(*) AS n FROM users').get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM subjects').get()).toEqual({ n: 0 })
+    // The existing target survived the ALTER and came out unleased, rather than
+    // the migration having quietly rebuilt the table and lost it.
+    expect(db.prepare('SELECT id, lease_owner, lease_expires_at FROM poll_targets').get()).toEqual({
+      id: 's1:202608:MATH',
+      lease_owner: null,
+      lease_expires_at: null,
+    })
+    // A section that predates level scoping keeps its row and comes out
+    // unclassified, which is what makes it visible to every level rather than
+    // to none until the next poll fills it in.
+    expect(db.prepare('SELECT id, level, level_norm FROM sections').get()).toEqual({
+      id: 's1:202608:10001',
+      level: null,
+      level_norm: null,
+    })
     db.close()
   })
 
@@ -97,6 +139,16 @@ describe('migrations', () => {
 })
 
 describe('tx', () => {
+  const school = (db: ReturnType<typeof openDb>, id: string) =>
+    db
+      .prepare(
+        'INSERT INTO schools (id,name,sis,base_url,enabled,config_json,created_at) VALUES (?,?,?,?,?,?,?)'
+      )
+      .run(id, id.toUpperCase(), 'banner9', `https://${id}.invalid`, 1, '{}', 0)
+
+  const count = (db: ReturnType<typeof openDb>): number =>
+    (db.prepare('SELECT COUNT(*) AS n FROM schools').get() as { n: number }).n
+
   it('rolls back on throw', () => {
     const db = openDb(':memory:')
     migrate(db)
@@ -110,6 +162,76 @@ describe('tx', () => {
     ).toThrow('boom')
     const n = db.prepare('SELECT COUNT(*) AS n FROM schools').get() as { n: number }
     expect(n.n).toBe(0)
+    db.close()
+  })
+
+  it('nests, committing the inner and outer work together', () => {
+    const db = openDb(':memory:')
+    migrate(db)
+    tx(db, () => {
+      school(db, 'outer')
+      tx(db, () => school(db, 'inner'))
+    })
+    expect(count(db)).toBe(2)
+    db.close()
+  })
+
+  it('reports the real error from an inner transaction, not a nesting one', () => {
+    // SQLite has no nested BEGIN. An inner tx used to throw "cannot start a
+    // transaction within a transaction" at its own BEGIN and then destroy the
+    // caller's error with a second throw from the rollback, so whatever
+    // actually went wrong never reached anyone.
+    const db = openDb(':memory:')
+    migrate(db)
+    expect(() =>
+      tx(db, () => {
+        school(db, 'outer')
+        tx(db, () => {
+          throw new Error('the real problem')
+        })
+      })
+    ).toThrow('the real problem')
+    expect(count(db)).toBe(0)
+    db.close()
+  })
+
+  it('unwinds only the inner work when the caller catches the inner failure', () => {
+    const db = openDb(':memory:')
+    migrate(db)
+    tx(db, () => {
+      school(db, 'kept')
+      try {
+        tx(db, () => {
+          school(db, 'discarded')
+          throw new Error('inner')
+        })
+      } catch {
+        // The point: the outer transaction is still usable afterwards.
+      }
+      school(db, 'also-kept')
+    })
+    expect(count(db)).toBe(2)
+    expect(db.prepare('SELECT id FROM schools ORDER BY id').all()).toEqual([
+      { id: 'also-kept' },
+      { id: 'kept' },
+    ])
+    db.close()
+  })
+
+  it('handles siblings and three levels without leaving a savepoint open', () => {
+    const db = openDb(':memory:')
+    migrate(db)
+    tx(db, () => {
+      tx(db, () => school(db, 'a'))
+      tx(db, () => {
+        school(db, 'b')
+        tx(db, () => school(db, 'c'))
+      })
+    })
+    expect(count(db)).toBe(3)
+    // Every level released, so the handle is out of a transaction entirely and
+    // the next unrelated write is not silently riding on an open one.
+    expect(db.isTransaction).toBe(false)
     db.close()
   })
 })
@@ -327,6 +449,54 @@ describe('Repo', () => {
       expect(env.repo.unseededTargets(10, env.clock.now)).toHaveLength(0)
     })
 
+    it('claims a never-polled target and an unwatched one only while unpolled', () => {
+      // claimTargets replaced dueTargets + unseededTargets in the loop, so it
+      // has to carry the same rule: bootstrap once, then only for demand.
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now).map((t) => t.id)).toEqual([target.id])
+
+      env.repo.upsertSection(target, section(), false)
+      env.repo.recordPollSuccess(target.id, env.clock.now - 1, 60_000, false)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+    })
+
+    it('claims a polled target once somebody is watching it', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const sid = env.repo.upsertSection(target, section(), false)
+      env.repo.recordPollSuccess(target.id, env.clock.now - 1, 60_000, false)
+      env.repo.createWatch({ userId: 'roshan', sectionId: sid })
+
+      const claimed = env.repo.claimTargets('w1', 10, env.clock.now, 30_000)
+      expect(claimed.map((t) => t.id)).toEqual([target.id])
+      expect(claimed[0]!.lease_owner).toBe('w1')
+      expect(claimed[0]!.lease_expires_at).toBe(env.clock.now + 30_000)
+    })
+
+    it('will not claim a target before its next poll time, lease or no lease', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      env.repo.recordPollSuccess(target.id, env.clock.now + 60_000, 60_000, false)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+    })
+
+    it('will not claim a target a permanent error switched off', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      env.repo.recordPollError(target.id, env.clock.now - 1, 'no such subject', true)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toEqual([])
+    })
+
+    it('releases only the leases the asking worker actually holds', () => {
+      const mine = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const theirs = env.repo.ensureTarget(SCHOOL_ID, TERM, 'CS', 60_000)
+      env.repo.claimTargets('w1', 1, env.clock.now)
+      env.repo.claimTargets('w2', 1, env.clock.now)
+
+      // Whichever way the two rows fell, releasing as w1 frees exactly one.
+      expect(env.repo.releaseTargets([mine.id, theirs.id], 'w1')).toBe(1)
+      const still = env.repo.listTargets().filter((t) => t.lease_owner !== null)
+      expect(still).toHaveLength(1)
+      expect(still[0]!.lease_owner).toBe('w2')
+    })
+
     it('counts distinct watchers, which is the whole dedupe premise', () => {
       const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
       const a = env.repo.upsertSection(target, section({ crn: 'A' }), false)
@@ -390,6 +560,33 @@ describe('Repo', () => {
       // Same watch, same event: the UNIQUE constraint is the idempotency guard.
       expect(env.repo.enqueueNotification(watch, eventId)).toBeNull()
       expect(env.repo.pendingNotifications()).toHaveLength(1)
+    })
+
+    it('raises rather than reporting a failed queue insert as already queued', () => {
+      // Null has to mean exactly one thing. A blanket catch turned a full disk
+      // or a foreign key failure into a silent "already queued", which the
+      // poller reads as nothing to do: the seat opened, the event row exists,
+      // and the student is never told, with no row and no log line anywhere.
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const sid = env.repo.upsertSection(target, section(), false)
+      const watch = env.repo.createWatch({ userId: 'roshan', sectionId: sid })
+
+      // An event id that was never written, which is the foreign key failing
+      // rather than a duplicate.
+      expect(() => env.repo.enqueueNotification(watch, 987_654)).toThrow(/FOREIGN KEY/i)
+      expect(env.repo.pendingNotifications()).toHaveLength(0)
+    })
+
+    it('records an event and reads it straight back by its id', () => {
+      // Delivery resolves the event by primary key rather than by scanning a
+      // window of recent ones, so a busy section cannot age an alert out.
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const sid = env.repo.upsertSection(target, section(), false)
+      const eventId = env.repo.recordEvent(sid, {
+        kind: 'seat_opened', prevSeats: 0, newSeats: 1, prevWaitlist: 0, newWaitlist: 0, detail: 'x',
+      })
+      expect(env.repo.getEvent(eventId)!.kind).toBe('seat_opened')
+      expect(env.repo.getEvent(987_654)).toBeNull()
     })
 
     it('holds back a notification until its retry time', () => {

@@ -75,6 +75,15 @@ interface PsClassDto {
   /** Advisory single letter, "O" for open. Diffing runs off the numbers. */
   enrl_stat?: string
 
+  /**
+   * Academic Career, which is PeopleSoft's name for academic level: UGRD,
+   * GRAD, LAW, MEDS and whatever else an institution has defined. The code is
+   * what we want; the description is a fallback for an install that only sends
+   * the human-readable one.
+   */
+  acad_career?: string
+  acad_career_descr?: string
+
   instructors?: unknown
   meetings?: unknown
 }
@@ -92,7 +101,11 @@ interface PsSubjectDto {
 export class PeopleSoftAdapter implements SisAdapter {
   readonly id = 'peoplesoft' as const
 
-  constructor(private readonly client: PoliteClient) {}
+  constructor(
+    private readonly client: PoliteClient,
+    /** Where skipped rows are reported. Injectable so a test can stay quiet. */
+    private readonly log: (msg: string) => void = (msg) => console.warn(msg)
+  ) {}
 
   /**
    * Term codes come from config, never from the wire and never from a formula.
@@ -141,7 +154,13 @@ export class PeopleSoftAdapter implements SisAdapter {
     opts: FetchOptions = {}
   ): Promise<RawSection[]> {
     const out: RawSection[] = []
+    // Keyed on every row the install returned, not just the ones we keep. If a
+    // page happens to hold only sibling-subject rows, dropping them all would
+    // otherwise read as "this page added nothing", which is the signal for a
+    // page parameter that is being ignored.
     const seen = new Set<string>()
+    let rowsSeen = 0
+    let subjectMatches = 0
 
     for (let page = 1; ; page++) {
       const url = this.url(school, CLASS_SEARCH, { term, subject, page: String(page) })
@@ -161,31 +180,46 @@ export class PeopleSoftAdapter implements SisAdapter {
       // classes and returning nothing is the honest answer.
       if (rows.length === 0) break
 
-      const mapped = rows.map(toRawSection)
-      const wanted = mapped.filter((s) => s.subject.toUpperCase() === subject.toUpperCase())
-
-      // The subject filter is documented but unverified end to end, and a
-      // sibling filter named subject_like exists. If the install ignores ours we
-      // would quietly pull the entire term into one subject's target, and every
-      // other subject's sections would then appear and vanish as we paged.
-      if (wanted.length === 0) {
-        throw new SisError(
-          `ClassSearch returned ${rows.length} rows for ${subject} ${term} but none carry that subject; ` +
-            `the subject filter may be ignored, or ${subject} is not this install's subject code`,
-          null,
-          true
+      // Row by row, not `rows.map`. One unreadable row used to throw out of the
+      // whole page, and because that error is transient the target retried and
+      // failed forever at maxIntervalMs: every student watching any section in
+      // that subject silently stopped getting alerts. A cancelled or
+      // administrative row carrying no seat counts is exactly the row a
+      // registrar leaves in a page, and banner.ts is the bar here, where no
+      // single row can poison a page.
+      const { mapped, skipped } = mapRows(rows)
+      if (skipped.length > 0) {
+        // Tight on purpose. A skipped row is stored as absent, and its return
+        // diffs as prev = null, which yields section_added and swallows exactly
+        // one seat_opened. Losing a tenth of a page that way is worse than
+        // retrying the page.
+        if (mapped.length === 0 || skipped.length * 10 > rows.length) {
+          throw new SisError(
+            `${skipped.length} of ${rows.length} rows on page ${page} for ${subject} ${term} ` +
+              `could not be read: ${skipped[0]!.reason}`,
+            null,
+            true
+          )
+        }
+        this.log(
+          `skipped ${skipped.length} unreadable row(s) on page ${page} for ${subject} ${term}: ` +
+            `class_nbr ${skipped.map((s) => s.crn).join(', ')}`
         )
       }
+
+      rowsSeen += rows.length
 
       // Deduping by CRN rather than trusting the pages to be disjoint, because
       // a repeated row would otherwise be stored twice and then diffed against
       // itself.
       let added = 0
-      for (const s of wanted) {
+      for (const s of mapped) {
         if (seen.has(s.crn)) continue
         seen.add(s.crn)
-        out.push(s)
         added++
+        if (s.subject.toUpperCase() !== subject.toUpperCase()) continue
+        subjectMatches++
+        out.push(s)
       }
 
       // A page that adds nothing means the page parameter is not being
@@ -204,6 +238,23 @@ export class PeopleSoftAdapter implements SisAdapter {
       if (out.length > 20_000) {
         throw new SisError(`refusing to page past 20000 sections for ${subject}`, null, false)
       }
+    }
+
+    // The subject filter is documented but unverified end to end, and a sibling
+    // filter named subject_like exists. If the install ignores ours we would
+    // quietly pull the entire term into one subject's target, and every other
+    // subject's sections would then appear and vanish as we paged.
+    //
+    // Judged once, over everything we fetched, rather than per page. Per page it
+    // killed the whole subject whenever a page of MATHBIO rows happened to sort
+    // together, which is the same silent outage as an unreadable row.
+    if (rowsSeen > 0 && subjectMatches === 0) {
+      throw new SisError(
+        `ClassSearch returned ${rowsSeen} rows for ${subject} ${term} but none carry that subject; ` +
+          `the subject filter may be ignored, or ${subject} is not this install's subject code`,
+        null,
+        true
+      )
     }
 
     return out
@@ -279,6 +330,33 @@ export class PeopleSoftAdapter implements SisAdapter {
   }
 }
 
+export interface SkippedRow {
+  /** The class number if we could read one, so an operator can look the row up. */
+  crn: string
+  reason: string
+}
+
+/**
+ * Maps a page, keeping the rows it can read and setting aside the ones it
+ * cannot. The caller decides what an unreadable fraction means; this only
+ * refuses to let one row decide for the other forty.
+ */
+export function mapRows(rows: PsClassDto[]): { mapped: RawSection[]; skipped: SkippedRow[] } {
+  const mapped: RawSection[] = []
+  const skipped: SkippedRow[] = []
+  for (const row of rows) {
+    try {
+      mapped.push(toRawSection(row))
+    } catch (err) {
+      skipped.push({
+        crn: str(row?.class_nbr) || '(no class_nbr)',
+        reason: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+  return { mapped, skipped }
+}
+
 export function toRawSection(row: PsClassDto): RawSection {
   const crn = str(row.class_nbr)
   if (!crn) {
@@ -300,8 +378,15 @@ export function toRawSection(row: PsClassDto): RawSection {
   // the student sees on the class search is the one they will act on.
   let seats: number
   if (available !== null) {
+    // A registrar that says zero means zero, so this branch believes it.
     seats = available
-  } else if (capacity !== null && enrollment !== null) {
+  } else if (capacity !== null && capacity > 0 && enrollment !== null) {
+    // Capacity zero is not a full section here, it is a row we cannot read.
+    // PeopleSoft reports class_capacity 0 for uncapped and parent-capped
+    // sections, and a catalog rebuild can zero every count while still serving
+    // valid JSON. Believing it would report those sections permanently full,
+    // and then flip every one of them from 0 to n on the next healthy poll,
+    // firing seat_opened for every watched section at the school at once.
     seats = capacity - enrollment
   } else {
     // Defaulting to zero here would mark the section permanently full, and the
@@ -310,8 +395,16 @@ export function toRawSection(row: PsClassDto): RawSection {
     throw new SisError(`class ${crn} carries no readable seat counts: ${preview(row)}`, null, true)
   }
 
-  const waitlist = optNum(row.wait_tot) ?? optNum(row.wait_list_total) ?? 0
-  const waitlistCap = optNum(row.wait_cap) ?? optNum(row.wait_list_capacity) ?? 0
+  // Absent stays distinct from zero on the waitlist too, and for the same
+  // reason it does on seats. A row that carries wait_cap 25 and no readable
+  // total used to become "0 of 25 taken", so the next diff after a healthy poll
+  // read as a waitlist reopening with 25 spots free and emailed every watcher
+  // about a spot that never opened. waitlist_opened is notifiable, so this
+  // reached the student.
+  const waitlistTotal = optNum(row.wait_tot) ?? optNum(row.wait_list_total)
+  const waitlistCapacity = optNum(row.wait_cap) ?? optNum(row.wait_list_capacity)
+  const waitlist = waitlistTotal ?? 0
+  const waitlistCap = waitlistTotal === null ? 0 : (waitlistCapacity ?? 0)
 
   const subject = str(row.subject)
   const courseNumber = str(row.catalog_nbr)
@@ -329,6 +422,13 @@ export function toRawSection(row: PsClassDto): RawSection {
     meetingDays: meeting ? formatDays(str(meeting.days)) : null,
     meetingTime: meeting ? formatTime(meeting.start_time, meeting.end_time) : null,
     campus: str(row.campus_descr) || str(row.campus) || str(row.location_descr) || str(row.location) || null,
+    // Academic Career is PeopleSoft's academic level. The code is preferred
+    // over the description because it is the stable half: two installs both say
+    // UGRD where one says "Undergraduate" and the other "Undergrad". Neither
+    // being present leaves the section unclassified, which shows it to every
+    // level rather than to none, since a field this adapter has never seen on a
+    // live install must not be able to hide a class.
+    level: str(row.acad_career) || str(row.acad_career_descr) || null,
 
     seats,
     // Capacity and enrolment feed history and the alert copy, never a decision
