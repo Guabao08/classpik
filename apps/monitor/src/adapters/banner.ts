@@ -1,3 +1,4 @@
+import { text } from './entities.js'
 import { PoliteClient } from './http.js'
 import {
   SisError,
@@ -110,7 +111,9 @@ export class BannerAdapter implements SisAdapter {
     return dto.map((t) => ({
       code: String(t.code),
       // Banner appends markup like "Fall 2026 (View Only)" on archived terms.
-      description: String(t.description ?? '').replace(/<[^>]*>/g, '').trim(),
+      // Tags come off before entities are decoded, never after: a literal
+      // `&lt;b&gt;` in a term name is text the registrar meant to show.
+      description: text(String(t.description ?? '').replace(/<[^>]*>/g, '')),
     }))
   }
 
@@ -125,7 +128,9 @@ export class BannerAdapter implements SisAdapter {
     )}&offset=1&max=500`
     const dto = await this.client.json<BannerTermDto[]>(url, { signal: opts.signal })
     if (!Array.isArray(dto)) throw new SisError('get_subject did not return an array', null, true)
-    return dto.map((s) => ({ code: String(s.code), description: String(s.description ?? '') }))
+    // Banner escapes subject names: Georgia Tech sends `Chemical &amp;
+    // Biomolecular Engr`, and storing that raw breaks both search and display.
+    return dto.map((s) => ({ code: String(s.code), description: text(s.description) }))
   }
 
   async fetchSections(
@@ -281,13 +286,15 @@ export function toRawSection(row: BannerSectionDto): RawSection {
     code: row.subjectCourse
       ? `${row.subject} ${row.courseNumber}`
       : `${row.subject} ${row.courseNumber}`,
-    title: String(row.courseTitle ?? '').trim(),
+    // Free text, so it is escaped on the way out of Banner. A course really
+    // named "Data Structures & Algorithms" arrives as `&amp;`.
+    title: text(row.courseTitle),
     section: String(row.sequenceNumber ?? ''),
     credits: row.creditHours ?? row.creditHourLow ?? null,
-    instructor: row.faculty?.find((f) => f.displayName)?.displayName?.trim() ?? null,
+    instructor: orNull(text(row.faculty?.find((f) => f.displayName)?.displayName)),
     meetingDays: days,
     meetingTime: formatTime(meeting?.beginTime ?? null, meeting?.endTime ?? null),
-    campus: row.campusDescription ?? null,
+    campus: orNull(text(row.campusDescription)),
     level: firstLevel(row),
 
     seats,
@@ -324,6 +331,14 @@ function firstLevel(row: BannerSectionDto): string | null {
   }
   const scalar = row.levelDescription?.trim()
   return scalar ? scalar : null
+}
+
+/**
+ * Empty display text is absence, not a value. `RawSection` reads null as "this
+ * install does not report it", and a blank instructor name means exactly that.
+ */
+function orNull(s: string): string | null {
+  return s.length > 0 ? s : null
 }
 
 function num(v: unknown): number {

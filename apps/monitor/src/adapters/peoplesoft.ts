@@ -1,3 +1,4 @@
+import { decodeEntities } from './entities.js'
 import { PoliteClient } from './http.js'
 import {
   SisError,
@@ -572,8 +573,13 @@ function optNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * Every display string from this adapter goes through here, which is also
+ * where entities are decoded. PeopleSoft escapes free text in its JSON the
+ * same way Banner does, because the same values feed its own pages.
+ */
 function str(v: unknown): string {
-  if (typeof v === 'string') return v.trim()
+  if (typeof v === 'string') return decodeEntities(v).trim()
   if (typeof v === 'number' && Number.isFinite(v)) return String(v)
   return ''
 }

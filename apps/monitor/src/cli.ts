@@ -195,12 +195,27 @@ function fail(msg: string): number {
   return 1
 }
 
+/*
+ * Setting `exitCode` and returning, rather than calling `process.exit()`.
+ *
+ * `process.exit()` tears the process down in the same tick, while libuv may
+ * still be closing handles left over from the HTTP client. On Windows that is
+ * not a graceful race to lose: node aborts with
+ *
+ *   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c
+ *
+ * after the command has already done its work and printed its output, which
+ * reads as a crash and is not one. Nothing here keeps the loop alive once the
+ * work is done, so letting node exit on its own is both correct and prompt.
+ */
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2))
-    .then((code) => process.exit(code))
+    .then((code) => {
+      process.exitCode = code
+    })
     .catch((err) => {
       console.error('error:', err instanceof Error ? err.message : err)
-      process.exit(1)
+      process.exitCode = 1
     })
 }
 

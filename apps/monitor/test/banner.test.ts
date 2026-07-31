@@ -44,6 +44,8 @@ interface StubCall { url: string; method: string; body?: string }
 /** Minimal stand-in for a Banner install: cookie, term handshake, search. */
 function stubBanner(opts: {
   sections?: unknown[]
+  subjects?: unknown[]
+  terms?: unknown[]
   totalCount?: number
   authorised?: boolean
   onCall?: (c: StubCall) => void
@@ -72,12 +74,17 @@ function stubBanner(opts: {
     if (u.includes('/classSearch/resetDataForm')) {
       return new Response('true', { status: 200, headers })
     }
+    if (u.includes('/classSearch/get_subject')) {
+      return new Response(JSON.stringify(opts.subjects ?? []), { status: 200, headers })
+    }
     if (u.includes('/classSearch/getTerms')) {
       return new Response(
-        JSON.stringify([
-          { code: '202608', description: 'Fall 2026' },
-          { code: '202602', description: 'Spring 2026 <span>(View only)</span>' },
-        ]),
+        JSON.stringify(
+          opts.terms ?? [
+            { code: '202608', description: 'Fall 2026' },
+            { code: '202602', description: 'Spring 2026 <span>(View only)</span>' },
+          ]
+        ),
         { status: 200, headers }
       )
     }
@@ -115,6 +122,28 @@ describe('toRawSection', () => {
       waitlistCap: 25,
       waitlistAvailable: 11,
     })
+  })
+
+  it('decodes escaped text, because Banner escapes free text in its JSON', () => {
+    const escaped = {
+      ...SECTION_DTO,
+      courseTitle: 'Data Structures &amp; Algorithms',
+      campusDescription: 'Main &amp; Midtown',
+      faculty: [{ displayName: 'O&#39;Brien, Dana' }],
+    }
+    const s = toRawSection(escaped as never)
+    expect(s.title).toBe('Data Structures & Algorithms')
+    expect(s.campus).toBe('Main & Midtown')
+    expect(s.instructor).toBe("O'Brien, Dana")
+  })
+
+  it('reports blank display text as absent rather than empty', () => {
+    // Null is our "this install does not report it"; an empty string would
+    // render as a field the registrar filled in with nothing.
+    const blank = { ...SECTION_DTO, campusDescription: '   ', faculty: [{ displayName: '  ' }] }
+    const s = toRawSection(blank as never)
+    expect(s.campus).toBeNull()
+    expect(s.instructor).toBeNull()
   })
 
   it('maps the section level, which is a registrar fact and not a preference', () => {
@@ -344,6 +373,32 @@ describe('BannerAdapter', () => {
     const terms = await adapter.listTerms(testSchool())
     expect(terms[0]).toEqual({ code: '202608', description: 'Fall 2026' })
     expect(terms[1]!.description).toBe('Spring 2026 (View only)')
+  })
+
+  it('decodes escaped subject names', async () => {
+    // Verbatim from Georgia Tech's get_subject response on 2026-07-31. Stored
+    // raw, this both displays wrong and stops "Chemical &" from matching.
+    const { adapter } = stubBanner({
+      subjects: [
+        { code: 'CHBE', description: 'Chemical &amp; Biomolecular Engr' },
+        { code: 'CS', description: 'Computer Science' },
+      ],
+    })
+    const subjects = await adapter.listSubjects(testSchool(), '202608')
+    expect(subjects).toEqual([
+      { code: 'CHBE', description: 'Chemical & Biomolecular Engr' },
+      { code: 'CS', description: 'Computer Science' },
+    ])
+  })
+
+  it('strips term markup before decoding entities, not after', async () => {
+    // Order matters: decoding first would turn a literal `&lt;b&gt;` into a
+    // tag that the stripper then eats, losing text the registrar meant to show.
+    const { adapter } = stubBanner({
+      terms: [{ code: '202608', description: 'Fall &amp; Winter <b>2026</b>' }],
+    })
+    const terms = await adapter.listTerms(testSchool())
+    expect(terms[0]!.description).toBe('Fall & Winter 2026')
   })
 
   it('surfaces an HTML error page as a readable error, not a JSON parse crash', async () => {

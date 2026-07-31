@@ -9,7 +9,7 @@ Autonomous course registration for college students.
 
 | Path | What it is | Status |
 |---|---|---|
-| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 771 tests** |
+| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 786 tests** |
 | [`apps/web`](apps/web) | Landing page and the watcher UI, wired to the monitor API. | Built |
 | *(not started)* | The local agent that performs enrollment. | Blocked on Phase 0 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Every design decision and why. | |

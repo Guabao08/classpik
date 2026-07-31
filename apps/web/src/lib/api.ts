@@ -10,13 +10,18 @@ export const API_BASE: string =
   (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8787'
 
 export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number | null,
-    readonly offline = false
-  ) {
+  // Declared and assigned rather than written as constructor parameter
+  // properties: those are a TypeScript-only construct, and this project builds
+  // under `erasableSyntaxOnly`, which allows only syntax that erases to
+  // nothing.
+  readonly status: number | null
+  readonly offline: boolean
+
+  constructor(message: string, status: number | null, offline = false) {
     super(message)
     this.name = 'ApiError'
+    this.status = status
+    this.offline = offline
   }
 }
 
