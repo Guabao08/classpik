@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { buildAdapters, detectSis } from './adapters/registry.js'
 import { PoliteClient } from './adapters/http.js'
 import { loadSchoolsFromDir } from './config/schools.js'
+import { discoverSchool, toYaml, type Discovery } from './config/discover.js'
 import { migrate, openDb } from './core/db.js'
 import { Repo } from './core/repo.js'
 
@@ -25,6 +26,9 @@ classpik monitor cli
   targets                       show poll targets and their state
   stats                         counts across the service
   detect <url>                  guess which SIS a portal URL belongs to
+  discover <domain>...          find a school's SIS and prove its catalog is
+                                readable logged out. Prints a ready config for
+                                every school that passes.
 
 env: CLASSPIK_DB (default ./classpik.db)
 `.trim()
@@ -43,6 +47,43 @@ async function main(argv: string[]): Promise<number> {
     const sis = detectSis(url)
     console.log(sis ?? 'unknown (inspect the portal by hand)')
     return sis ? 0 : 1
+  }
+
+  // Reads public pages only, and never opens the database: discovery is
+  // research, and nothing it learns is recorded until a person commits a config.
+  if (cmd === 'discover') {
+    if (args.length === 0) return fail('discover needs at least one domain, e.g. gatech.edu')
+
+    // One client across every domain, so its per-host limits still mean
+    // something when a batch touches fifty schools.
+    const client = new PoliteClient({ maxRetries: 1, timeoutMs: 12_000 })
+    const verified: Discovery[] = []
+
+    for (const domain of args) {
+      const d = await discoverSchool(domain.replace(/^https?:\/\//, '').replace(/\/.*$/, ''), {
+        client,
+      })
+      if (d.publicCatalog) {
+        verified.push(d)
+        console.log(`ok    ${d.domain.padEnd(24)} ${d.baseUrl}`)
+        console.log(`      ${d.terms.length} terms, latest ${d.terms[0]?.code} ${d.terms[0]?.description}`)
+      } else {
+        console.log(`no    ${d.domain.padEnd(24)} ${d.sis ?? 'unknown'}: ${d.reason}`)
+      }
+    }
+
+    if (verified.length === 0) {
+      console.log(`\n0 of ${args.length} verified.`)
+      return 1
+    }
+
+    console.log(`\n${verified.length} of ${args.length} verified. Configs below, all disabled.`)
+    for (const d of verified) {
+      const id = d.domain.replace(/\.(edu|org|com)$/i, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
+      console.log(`\n${'#'.repeat(70)}\n# schools/${id}.yaml\n${'#'.repeat(70)}`)
+      console.log(toYaml(d))
+    }
+    return 0
   }
 
   const db = openDb(DB)
