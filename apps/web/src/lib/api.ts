@@ -93,12 +93,32 @@ export interface Stats {
    * it will be sent, rather than finding out from a rejected watch.
    */
   channels: string[]
+  /**
+   * Whether a verification or reset link actually reaches a mailbox.
+   *
+   * A different fact from `channels`, which is about seat alerts. False means
+   * the monitor prints those links to its own log instead of mailing them,
+   * which is a fine development mode and a trap in front of a student: the
+   * recovery screens used to say "check your email" either way, and somebody
+   * who cannot sign in and gets no link creates a second account, which is
+   * exactly what the recovery work exists to prevent.
+   */
+  accountMail: boolean
 }
 
 export interface User {
   id: string
   email: string
   createdAt: number
+  /**
+   * Whether somebody has opened a link we mailed to this address.
+   *
+   * The one thing it gates is email alerts, because that is the one thing an
+   * unproved address can be abused for: signing up as somebody else's address
+   * and having ClassPik mail them from its own sending domain. Everything else
+   * on the account works either way, so the UI nudges rather than blocks.
+   */
+  emailVerified: boolean
   /**
    * Where this account is shopping. The monitor applies these to catalog search
    * on its own, so a signed-in student sees their own school, term and levels
@@ -248,6 +268,48 @@ export const api = {
   logout: () => call<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
   me: () => call<{ user: User }>('/api/auth/me'),
+
+  // Ask for the confirmation link again. `sent: false` with `verified: true`
+  // means somebody already opened one, which is worth showing rather than
+  // reporting a send that did not happen.
+  requestVerification: () =>
+    call<{ ok: boolean; verified: boolean; sent: boolean }>('/api/auth/verify/request', {
+      method: 'POST',
+    }),
+
+  // Public, because the link is opened wherever the mail was read, which is very
+  // often not the device that signed up.
+  verifyEmail: (token: string) =>
+    call<{ ok: boolean; email: string }>('/api/auth/verify', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+
+  // The answer here is the same whether or not the address has an account, and
+  // that is deliberate on the monitor's side: any difference would be a free
+  // list of which addresses at a university have ClassPik accounts. So the UI
+  // must not go looking for one either.
+  requestPasswordReset: (email: string) =>
+    call<{ ok: boolean; message: string }>('/api/auth/reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  // No session comes back. Signing in with the new password is the step that
+  // proves the reset worked, and every old session died with the old password.
+  resetPassword: (token: string, password: string) =>
+    call<{ ok: boolean }>('/api/auth/reset', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    }),
+
+  // Keeps this browser signed in and kills every other session, which is what
+  // makes a leaked token recoverable without waiting out its thirty day life.
+  changePassword: (currentPassword: string, password: string) =>
+    call<{ ok: boolean; sessionsRevoked: number }>('/api/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, password }),
+    }),
 
   stats: () => call<Stats>('/api/stats'),
 

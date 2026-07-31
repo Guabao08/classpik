@@ -98,6 +98,22 @@ export class ResendTransport implements Transport {
     let message: MailMessage
     try {
       message = composeAlertEmail(payload, to, this.identity)
+    } catch (err) {
+      throw new PermanentDeliveryError(
+        `could not compose the alert email: ${describe(err)}`,
+        err
+      )
+    }
+    return this.sendMail(message, `${payload.watchId}:${payload.event.id}`)
+  }
+
+  /**
+   * Send a message somebody else composed, which is how the account emails
+   * (verify an address, reset a password) reach the same configured provider as
+   * the seat alerts rather than needing a second one.
+   */
+  async sendMail(message: MailMessage, idempotencyKey: string): Promise<void> {
+    try {
       // Resend builds the MIME itself, so the only composition rule that still
       // applies is the one that matters: a course title carrying a CR must not
       // become a header the registrar wrote for us.
@@ -119,7 +135,7 @@ export class ResendTransport implements Transport {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
 
     try {
-      return await this.exchange(controller, message, `${payload.watchId}:${payload.event.id}`)
+      return await this.exchange(controller, message, idempotencyKey)
     } finally {
       clearTimeout(timer)
     }

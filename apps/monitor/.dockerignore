@@ -1,0 +1,49 @@
+# Build context is apps/monitor. Everything listed here either does not belong
+# in an image or is actively dangerous to ship.
+
+# Rebuilt inside the image by `npm ci`. Copying the host's tree in would ship
+# whatever a laptop happens to have, including native builds for the wrong
+# platform, and would silently override the lockfile the build is supposed to
+# install from.
+node_modules/
+
+# Built in the build stage. A stale dist/ from a local `npm run build` copied
+# over the freshly compiled one is a deployment of code nobody just typechecked.
+dist/
+
+# A developer's database. This is the whole point of the volume: shipping a .db
+# file bakes real accounts, sessions and watches into an image layer that gets
+# pushed to a registry, and it means the first boot reads a snapshot instead of
+# the volume.
+*.db
+*.db-wal
+*.db-shm
+
+# Tests and their fixtures. They run in CI, not in production, and the fixture
+# directory is the largest thing in the context.
+test/
+vitest.config.ts
+
+# Phase 0 captures hold live session cookies. Ignored in git as well; repeated
+# here because a build context is not a git checkout and does not read
+# .gitignore.
+notes/
+*.curl
+*.har
+
+# Secrets. Credentials reach the container through the environment, never
+# through a layer, where they would survive in the image history.
+.env
+.env.*
+
+# Docs and deployment config. The image does not read them, and a README change
+# should not invalidate the npm layer cache.
+README.md
+fly.toml
+Dockerfile
+.dockerignore
+
+.git/
+.gitignore
+.DS_Store
+Thumbs.db

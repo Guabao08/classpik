@@ -2,7 +2,7 @@ import { connect as netConnect } from 'node:net'
 import { connect as tlsConnect } from 'node:tls'
 import type { Duplex } from 'node:stream'
 import { hostname } from 'node:os'
-import { buildMessage, CRLF, dotStuff, mailboxOf } from './mime.js'
+import { buildMessage, CRLF, dotStuff, mailboxOf, type MailMessage } from './mime.js'
 import { PermanentDeliveryError, type NotificationPayload, type Transport } from './notify.js'
 import { composeAlertEmail, describe, recipientOf, type EmailIdentity } from './email.js'
 
@@ -108,13 +108,24 @@ export class SmtpTransport implements Transport {
 
   async send(payload: NotificationPayload, target: string | null): Promise<void> {
     const recipient = recipientOf(target)
+    return this.sendMail(composeAlertEmail(payload, recipient, this.identity))
+  }
+
+  /**
+   * Submit a message somebody else composed, which is how the account emails
+   * (verify an address, reset a password) go out over the same relay as the
+   * seat alerts rather than needing a second connection configured elsewhere.
+   */
+  async sendMail(message: MailMessage): Promise<void> {
     const envelopeFrom = mailboxOf(this.identity.from)
 
     let raw: string
+    let recipient: string
     try {
-      raw = buildMessage(
-        composeAlertEmail(payload, recipient, this.identity, { boundary: this.boundary?.() })
-      )
+      recipient = mailboxOf(message.to)
+      // The injected boundary is a test affordance and applies to whatever this
+      // transport sends, so it fills in here rather than at each call site.
+      raw = buildMessage({ ...message, boundary: message.boundary ?? this.boundary?.() })
     } catch (err) {
       // Composition only fails on data we cannot make into a legal message, and
       // the next attempt would be handed exactly the same data.

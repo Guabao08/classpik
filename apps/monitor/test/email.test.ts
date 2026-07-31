@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { composeAlertEmail, ResendTransport, RESEND_ENDPOINT } from '../src/core/email.js'
 import { emailFromEnv } from '../src/config/email.js'
+import { compose } from '../src/core/accountmail.js'
 import { Dispatcher, PermanentDeliveryError, type NotificationPayload } from '../src/core/notify.js'
 import type { EventRow, SectionRow } from '../src/core/repo.js'
 import type { RawSection } from '../src/adapters/types.js'
@@ -158,6 +159,31 @@ describe('ResendTransport', () => {
     await t.send(payload(), 'student@example.edu')
     const keys = calls.map((c) => (c.init.headers as Record<string, string>)['Idempotency-Key'])
     expect(keys).toEqual(['watch-1:77', 'watch-1:77'])
+  })
+
+  it('posts a message somebody else composed, which is how account mail goes out', async () => {
+    // Verification and reset links go through the same provider and the same
+    // sending domain as the alerts. A link arriving from somewhere else is one
+    // a student has every reason to distrust.
+    const { t, calls } = transport()
+    await t.sendMail(
+      compose(
+        'verify',
+        'ada@uni.test',
+        'https://classpik.test/verify?token=abc',
+        IDENTITY,
+        { at: 0, messageId: '<one@classpik.app>' }
+      ),
+      '<one@classpik.app>'
+    )
+    expect(calls[0]!.body).toMatchObject({
+      to: 'ada@uni.test',
+      subject: 'Confirm your ClassPik email address',
+    })
+    expect(String(calls[0]!.body.text)).toContain('https://classpik.test/verify?token=abc')
+    const headers = calls[0]!.init.headers as Record<string, string>
+    expect(headers['Idempotency-Key']).toBe('<one@classpik.app>')
+    expect(headers.Authorization).toBe(`Bearer ${API_KEY}`)
   })
 
   it('marks itself auto-generated so vacation responders stay out of the queue', async () => {
@@ -318,6 +344,30 @@ describe('emailFromEnv', () => {
     })
     expect(setup?.provider).toBe('resend')
     expect(setup?.transport.channel).toBe('email')
+  })
+
+  it('offers one object as both the alert transport and the account mailer', () => {
+    // One provider, one set of credentials, one sending domain. Two would be
+    // two things to configure and one more way for the reset link to be the
+    // message that never arrives.
+    for (const env of [
+      { CLASSPIK_EMAIL_PROVIDER: 'resend', CLASSPIK_EMAIL_FROM: 'alerts@classpik.app', RESEND_API_KEY: API_KEY },
+      { CLASSPIK_EMAIL_PROVIDER: 'smtp', CLASSPIK_EMAIL_FROM: 'alerts@classpik.app', CLASSPIK_SMTP_HOST: 'smtp.test' },
+    ]) {
+      const setup = emailFromEnv(env)!
+      expect(setup.mailer).toBe(setup.transport)
+      expect(setup.identity.from).toBe('alerts@classpik.app')
+    }
+  })
+
+  it('carries the reply-to onto the account emails as well as the alerts', () => {
+    const setup = emailFromEnv({
+      CLASSPIK_EMAIL_PROVIDER: 'resend',
+      CLASSPIK_EMAIL_FROM: 'alerts@classpik.app',
+      CLASSPIK_EMAIL_REPLY_TO: 'help@classpik.app',
+      RESEND_API_KEY: API_KEY,
+    })!
+    expect(setup.identity.replyTo).toBe('help@classpik.app')
   })
 
   it('never puts the API key in the startup log line', () => {

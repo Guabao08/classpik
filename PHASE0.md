@@ -131,9 +131,22 @@ Answers to the original checklist:
 - [x] **Many sections per request?** Yes. 1751 CS sections for Fall 2026, paged at 500. The one-request-per-subject economics the whole design rests on is real.
 - [x] **Rate limiting?** Nothing observed across roughly eight requests. That is far too small a sample to call it safe, so the polite defaults stay exactly as they are.
 
-Verified config is committed at `apps/monitor/schools/gatech.yaml`, `enabled: false`.
-Everything in it was read off live responses. Flipping that one flag starts real
-polling of Georgia Tech.
+Verified config is committed at `apps/monitor/schools/gatech.yaml`, and everything
+in it was read off live responses. It ships **`enabled: true`**.
+
+That flag on its own starts nothing: it makes zero upstream requests, because a
+Banner school has no term list in config and `registerSchool` seeds poll targets
+only for schools that already have terms. Real traffic at Georgia Tech begins
+with the CLI, and the first line of it is a live discovery request:
+
+```bash
+npm run cli -- terms gatech
+npm run cli -- subjects gatech 202608
+npm run cli -- seed gatech 202608
+```
+
+After that last one the poll loop is fetching the CS and MATH class lists on the
+schedule in the config, at a five minute floor. Turning it off is the one flag.
 
 ---
 

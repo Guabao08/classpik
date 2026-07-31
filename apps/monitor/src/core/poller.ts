@@ -437,9 +437,15 @@ export class Runner {
   }
 
   /**
-   * Sessions are never otherwise pruned, so the table grows one row per login
-   * for the life of the database. Hourly, and only when the Runner was given a
-   * repo, so nothing about the existing constructor call sites has to change.
+   * Sessions and recovery tokens are never otherwise pruned, so both tables
+   * grow one row per login and one per forgotten password for the life of the
+   * database. Hourly, and only when the Runner was given a repo, so nothing
+   * about the existing constructor call sites has to change.
+   *
+   * A dead token is unusable either way: `consumeAuthToken` checks the expiry in
+   * SQL, so deleting the row changes nothing about what can be replayed. This is
+   * housekeeping, and it doubles as not keeping a record of who asked for a
+   * reset link a year ago.
    */
   private purgeSessions(): void {
     if (!this.repo) return
@@ -448,6 +454,8 @@ export class Runner {
     this.lastPurgeAt = at
     const removed = this.repo.purgeExpiredSessions(at)
     if (removed > 0) this.log('purged expired sessions', { removed })
+    const tokens = this.repo.purgeExpiredAuthTokens(at)
+    if (tokens > 0) this.log('purged expired recovery tokens', { removed: tokens })
   }
 
   /**

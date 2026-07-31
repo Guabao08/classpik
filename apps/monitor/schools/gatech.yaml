@@ -40,8 +40,14 @@ polling:
   maxConcurrentRequests: 2
   minRequestGapMs: 500
 
-# Deliberately off. Everything above is confirmed working, so this is one line
-# away from live. It stays off until Roshan says go, because flipping it starts
-# continuous automated traffic against his own university, and that is his call
-# to make rather than a side effect of a config file landing in a commit.
-enabled: false
+# Live, on Roshan's say-so.
+#
+# What that means concretely: whenever the monitor runs, it fetches the CS and
+# MATH class lists from the address above, on the schedule in the polling block.
+# Two subjects at a five minute floor is on the order of 500 requests a day
+# against a public page that requires no login, spread out, two at a time, with
+# 500ms between them and an identifying User-Agent.
+#
+# Nothing polls until a target exists, which is deliberate:
+#   npm run cli -- seed gatech 202608
+enabled: true

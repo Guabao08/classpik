@@ -251,6 +251,21 @@ describe('API', () => {
     /** Stands in for a configured provider. Nothing here sends anything. */
     const emailTransport = { channel: 'email', send: async () => {} }
 
+    /**
+     * Alerts only go to a proved address, so every test below that expects a
+     * watch to be created has to start from one. The gate itself is covered in
+     * auth.test.ts, next to the rest of the verification flow.
+     */
+    const verified = () => env.repo.markEmailVerified(alice.userId, env.clock.now)
+
+    it('refuses an email watch to an address nobody has proved they read', async () => {
+      dispatcher.register(emailTransport)
+      const res = await post('/api/watches', { sectionId: sid, channel: 'email' })
+      expect(res.status).toBe(403)
+      expect((await res.json() as any).error).toContain('confirm your email')
+      expect((await (await get('/api/watches')).json() as any).watches).toHaveLength(0)
+    })
+
     it('refuses an email watch when the server cannot send email', async () => {
       const res = await post('/api/watches', { sectionId: sid, channel: 'email' })
       expect(res.status).toBe(400)
@@ -268,6 +283,7 @@ describe('API', () => {
 
     it('defaults an email watch to the address the account signed up with', async () => {
       dispatcher.register(emailTransport)
+      verified()
       const created = await (await post('/api/watches', { sectionId: sid, channel: 'email' })).json() as any
       const listed = await (await get('/api/watches')).json() as any
 
@@ -288,6 +304,7 @@ describe('API', () => {
 
     it('accepts the account address written out explicitly', async () => {
       dispatcher.register(emailTransport)
+      verified()
       const res = await post('/api/watches', { sectionId: sid, channel: 'email', target: alice.email.toUpperCase() })
       expect(res.status).toBe(201)
       const listed = await (await get('/api/watches')).json() as any
@@ -524,6 +541,78 @@ describe('API', () => {
       })
       expect(res.status).toBe(503)
       await new Promise<void>((r) => bare.close(() => r()))
+    })
+  })
+
+  /**
+   * Which address a per-source rate limit is charged to.
+   *
+   * This was `req.socket.remoteAddress` and nothing else, with a comment saying
+   * the process listens directly. The documented deployment does not: `fly.toml`
+   * declares `[http_service]`, so fly-proxy is in front and every request arrives
+   * from one address. All five limiters then share one bucket, which turns
+   * twenty sign-in attempts a minute into twenty for the whole user base during
+   * registration week, and ten reset links an hour into a service-wide ceiling
+   * one loop can hold at zero.
+   */
+  describe('the source address behind a proxy', () => {
+    let proxied: Server | null = null
+
+    const bootWith = async (clientIpHeader: string | null): Promise<string> => {
+      proxied = createApi({
+        repo: env.repo,
+        now: () => env.clock.now,
+        clientIpHeader,
+        rateLimit: { authPerMinute: 1 },
+      })
+      await new Promise<void>((r) => proxied!.listen(0, r))
+      return `http://127.0.0.1:${(proxied!.address() as AddressInfo).port}`
+    }
+
+    // An address with no account, so the answer is always 401 unless the bucket
+    // is empty, which is 429. Nothing here depends on a password being right.
+    const attempt = (b: string, forwarded: string | null) =>
+      fetch(`${b}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(forwarded === null ? {} : { 'X-Forwarded-For': forwarded }),
+        },
+        body: JSON.stringify({ email: 'nobody@classpik.test', password: TEST_PASSWORD }),
+      })
+
+    afterEach(async () => {
+      if (proxied) await new Promise<void>((r) => proxied!.close(() => r()))
+      proxied = null
+    })
+
+    it('ignores a forwarded header by default, since any client can write one', async () => {
+      const b = await bootWith(null)
+      expect((await attempt(b, '203.0.113.1')).status).toBe(401)
+      expect((await attempt(b, '203.0.113.2')).status).toBe(429)
+    })
+
+    it('charges the forwarded address once an operator names the header', async () => {
+      const b = await bootWith('x-forwarded-for')
+      expect((await attempt(b, '203.0.113.1')).status).toBe(401)
+      expect((await attempt(b, '203.0.113.2')).status).toBe(401)
+      // And the budget is still real, per address rather than absent.
+      expect((await attempt(b, '203.0.113.2')).status).toBe(429)
+    })
+
+    it('reads the last hop, so a caller cannot pick their own bucket', async () => {
+      // X-Forwarded-For is a list every hop appends to, so a client sending one
+      // of its own gets the proxy's view of it appended after. Reading the first
+      // entry would hand every caller a fresh limit for the price of a header.
+      const b = await bootWith('x-forwarded-for')
+      expect((await attempt(b, 'not-really-me, 203.0.113.7')).status).toBe(401)
+      expect((await attempt(b, 'somebody-else, 203.0.113.7')).status).toBe(429)
+    })
+
+    it('falls back to the socket when the named header is absent', async () => {
+      const b = await bootWith('fly-client-ip')
+      expect((await attempt(b, null)).status).toBe(401)
+      expect((await attempt(b, null)).status).toBe(429)
     })
   })
 

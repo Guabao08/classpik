@@ -65,6 +65,8 @@ describe('migrations', () => {
     // predates it. Undoing the lease and level columns needs their indexes
     // dropped first, because SQLite refuses to drop a column an index still
     // refers to.
+    // auth_tokens before users, since it references it and foreign keys are on.
+    db.exec('DROP TABLE auth_tokens')
     db.exec('DROP TABLE users')
     db.exec('DROP TABLE sessions')
     db.exec('DROP TABLE subjects')
@@ -79,10 +81,16 @@ describe('migrations', () => {
 
     const result = migrate(db)
     expect(result.from).toBe(1)
-    expect(result.applied).toEqual(['accounts', 'subjects and leases', 'scoping'])
+    expect(result.applied).toEqual([
+      'accounts',
+      'subjects and leases',
+      'scoping',
+      'account recovery',
+    ])
     expect(db.prepare('SELECT COUNT(*) AS n FROM schools').get()).toEqual({ n: 1 })
     expect(db.prepare('SELECT COUNT(*) AS n FROM users').get()).toEqual({ n: 0 })
     expect(db.prepare('SELECT COUNT(*) AS n FROM subjects').get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM auth_tokens').get()).toEqual({ n: 0 })
     // The existing target survived the ALTER and came out unleased, rather than
     // the migration having quietly rebuilt the table and lost it.
     expect(db.prepare('SELECT id, lease_owner, lease_expires_at FROM poll_targets').get()).toEqual({
@@ -730,6 +738,159 @@ describe('Repo', () => {
 
       expect(env.repo.listEvents({ userId: 'roshan' })).toHaveLength(1)
       expect(env.repo.listEvents({})).toHaveLength(2)
+    })
+  })
+
+  describe('recovery tokens', () => {
+    const HOUR = 60 * 60_000
+
+    /** An account to hang tokens off, since auth_tokens has a foreign key. */
+    const account = (email = 'ada@classpik.test') =>
+      env.repo.createUser({ email, emailNorm: email, passwordHash: 'scrypt$x' })!
+
+    const issue = (
+      userId: string,
+      hash: string,
+      purpose = 'reset_password',
+      ttl = HOUR,
+      emailNorm = 'ada@classpik.test'
+    ) => env.repo.createAuthToken({ userId, purpose, tokenHash: hash, emailNorm, expiresAt: env.clock.now + ttl })
+
+    it('stores the digest it was handed and nothing resembling a token', () => {
+      const user = account()
+      const row = issue(user.id, 'digest-of-the-token')
+      expect(row.token_hash).toBe('digest-of-the-token')
+      expect(row.consumed_at).toBeNull()
+      expect(row.expires_at).toBe(env.clock.now + HOUR)
+    })
+
+    it('spends a token exactly once', () => {
+      const user = account()
+      issue(user.id, 'h1')
+      expect(env.repo.consumeAuthToken('h1', 'reset_password', env.clock.now)).not.toBeNull()
+      expect(env.repo.consumeAuthToken('h1', 'reset_password', env.clock.now)).toBeNull()
+    })
+
+    it('refuses a token that has expired', () => {
+      const user = account()
+      issue(user.id, 'h1')
+      expect(env.repo.consumeAuthToken('h1', 'reset_password', env.clock.now + HOUR)).toBeNull()
+      // And the row was not consumed by the refusal, so nothing was destroyed
+      // by an attempt that failed.
+      expect(env.repo.getAuthToken('h1')!.consumed_at).toBeNull()
+    })
+
+    it('refuses a token minted for the other errand', () => {
+      // The purpose is part of the lookup, so a 24 hour verification link can
+      // never be spent as a password reset.
+      const user = account()
+      issue(user.id, 'h1', 'verify_email', 24 * HOUR)
+      expect(env.repo.consumeAuthToken('h1', 'reset_password', env.clock.now)).toBeNull()
+      expect(env.repo.consumeAuthToken('h1', 'verify_email', env.clock.now)).not.toBeNull()
+    })
+
+    it('refuses a digest nobody issued', () => {
+      expect(env.repo.consumeAuthToken('never-issued', 'reset_password', env.clock.now)).toBeNull()
+    })
+
+    it('burns every outstanding token of one purpose without touching the other', () => {
+      const user = account()
+      issue(user.id, 'r1')
+      issue(user.id, 'r2')
+      issue(user.id, 'v1', 'verify_email', 24 * HOUR)
+
+      expect(env.repo.revokeAuthTokens(user.id, 'reset_password', env.clock.now)).toBe(2)
+      expect(env.repo.consumeAuthToken('r1', 'reset_password', env.clock.now)).toBeNull()
+      expect(env.repo.consumeAuthToken('v1', 'verify_email', env.clock.now)).not.toBeNull()
+    })
+
+    it('leaves another account\'s tokens alone', () => {
+      const ada = account('ada@classpik.test')
+      const bob = account('bob@classpik.test')
+      issue(ada.id, 'a1')
+      issue(bob.id, 'b1')
+
+      env.repo.revokeAuthTokens(ada.id, 'reset_password', env.clock.now)
+      expect(env.repo.consumeAuthToken('b1', 'reset_password', env.clock.now)).not.toBeNull()
+    })
+
+    it('counts recent tokens per account and purpose, which is what the throttle reads', () => {
+      const user = account()
+      issue(user.id, 'r1')
+      env.clock.now += 2 * HOUR
+      issue(user.id, 'r2')
+      issue(user.id, 'v1', 'verify_email', 24 * HOUR)
+
+      expect(env.repo.countAuthTokensSince(user.id, 'reset_password', env.clock.now - HOUR)).toBe(1)
+      expect(env.repo.countAuthTokensSince(user.id, 'reset_password', 0)).toBe(2)
+      expect(env.repo.countAuthTokensSince(user.id, 'verify_email', 0)).toBe(1)
+    })
+
+    it('purges expired rows without touching a live one', () => {
+      const user = account()
+      issue(user.id, 'dead')
+      issue(user.id, 'live', 'verify_email', 24 * HOUR)
+      expect(env.repo.purgeExpiredAuthTokens(env.clock.now + HOUR)).toBe(1)
+      expect(env.repo.getAuthToken('dead')).toBeNull()
+      expect(env.repo.getAuthToken('live')).not.toBeNull()
+    })
+
+    it('takes an account\'s tokens with it when the account goes', () => {
+      const user = account()
+      issue(user.id, 'h1')
+      env.repo.raw.prepare('DELETE FROM users WHERE id = ?').run(user.id)
+      expect(env.repo.getAuthToken('h1')).toBeNull()
+    })
+
+    it('does everything a completed reset has to do, in one call', () => {
+      const user = account()
+      issue(user.id, 'r1')
+      issue(user.id, 'r2')
+      env.repo.createSession({ userId: user.id, tokenHash: 's1', expiresAt: env.clock.now + 1e9 })
+      env.repo.lockUser(user.id, env.clock.now + HOUR)
+      env.repo.countLoginFailure(user.id)
+
+      env.repo.completePasswordReset(user.id, 'scrypt$new', env.clock.now)
+
+      const after = env.repo.getUser(user.id)!
+      expect(after.password_hash).toBe('scrypt$new')
+      expect(after.locked_until).toBeNull()
+      expect(after.failed_logins).toBe(0)
+      // Reading the link is the same proof a verification link asks for.
+      expect(after.email_verified_at).toBe(env.clock.now)
+      expect(env.repo.resolveSession('s1', env.clock.now)).toBeNull()
+      expect(env.repo.consumeAuthToken('r1', 'reset_password', env.clock.now)).toBeNull()
+      expect(env.repo.consumeAuthToken('r2', 'reset_password', env.clock.now)).toBeNull()
+    })
+
+    it('does not backdate a verification that already happened', () => {
+      const user = account()
+      env.repo.markEmailVerified(user.id, env.clock.now)
+      const first = env.repo.getUser(user.id)!.email_verified_at
+      env.clock.now += HOUR
+      env.repo.completePasswordReset(user.id, 'scrypt$new', env.clock.now)
+      expect(env.repo.getUser(user.id)!.email_verified_at).toBe(first)
+    })
+
+    it('spares one session on a password change and kills the rest', () => {
+      const user = account()
+      env.repo.createSession({ userId: user.id, tokenHash: 'keep', expiresAt: env.clock.now + 1e9 })
+      env.repo.createSession({ userId: user.id, tokenHash: 'drop1', expiresAt: env.clock.now + 1e9 })
+      env.repo.createSession({ userId: user.id, tokenHash: 'drop2', expiresAt: env.clock.now + 1e9 })
+      issue(user.id, 'r1')
+
+      expect(env.repo.completePasswordChange(user.id, 'scrypt$new', 'keep', env.clock.now)).toBe(2)
+      expect(env.repo.resolveSession('keep', env.clock.now)).not.toBeNull()
+      expect(env.repo.resolveSession('drop1', env.clock.now)).toBeNull()
+      // An outstanding reset link is a live key to the account, so it goes too.
+      expect(env.repo.consumeAuthToken('r1', 'reset_password', env.clock.now)).toBeNull()
+    })
+
+    it('revokes every session for an account when nothing is spared', () => {
+      const user = account()
+      env.repo.createSession({ userId: user.id, tokenHash: 's1', expiresAt: env.clock.now + 1e9 })
+      env.repo.createSession({ userId: user.id, tokenHash: 's2', expiresAt: env.clock.now + 1e9 })
+      expect(env.repo.revokeSessionsForUser(user.id, env.clock.now)).toBe(2)
     })
   })
 

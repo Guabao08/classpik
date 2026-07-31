@@ -97,9 +97,20 @@ export default function SignInView({
         </button>
       </form>
 
+      {/* A forgotten password used to mean a second account, and a second
+          account means every watch on the first one silently stops mattering.
+          A reset flow nobody can find is not a reset flow, so it is on the one
+          screen where somebody discovers they need it. */}
+      <a
+        href="/forgot"
+        className="mt-4 block text-center text-xs text-muted transition-colors hover:text-bright"
+      >
+        Forgot your password?
+      </a>
+
       <a
         href="/signup"
-        className="mt-4 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-2 block text-center text-xs text-muted transition-colors hover:text-bright"
       >
         No account yet? Create one
       </a>

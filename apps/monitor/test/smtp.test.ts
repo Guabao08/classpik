@@ -2,6 +2,7 @@ import { Duplex } from 'node:stream'
 import { createServer as netCreateServer, type AddressInfo, type Socket } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { SmtpTransport, type ConnectFn, type UpgradeFn } from '../src/core/smtp.js'
+import { compose } from '../src/core/accountmail.js'
 import { PermanentDeliveryError, type NotificationPayload } from '../src/core/notify.js'
 import type { EventRow, SectionRow } from '../src/core/repo.js'
 
@@ -167,6 +168,45 @@ describe('SmtpTransport', () => {
     expect(body.endsWith('\r\n.\r\n')).toBe(true)
     // Nothing but the terminator may be a lone dot on its own line.
     expect(body.slice(0, -5).split('\r\n').filter((l) => l === '.')).toEqual([])
+  })
+
+  it('submits a message somebody else composed, which is how account mail goes out', async () => {
+    // Verification and reset links travel the same configured relay as the
+    // alerts. A link arriving from a different sending domain is one a student
+    // has every reason to distrust, and a second relay is a second thing to
+    // misconfigure.
+    const server = smtpServer(happyScript())
+    await transportFor(server).sendMail(
+      compose(
+        'reset',
+        'ada@uni.test',
+        'https://classpik.test/reset?token=abc',
+        { from: FROM },
+        { at: Date.UTC(2026, 6, 28, 22, 4, 11), messageId: '<one@classpik.app>' }
+      )
+    )
+
+    expect(server.mismatches).toEqual([])
+    const commands = server.socket.written.map((w) => w.split('\r\n')[0])
+    expect(commands[2]).toBe('MAIL FROM:<alerts@classpik.app>')
+    expect(commands[3]).toBe('RCPT TO:<ada@uni.test>')
+    const body = server.socket.written[5]!
+    expect(body).toContain('Subject: Reset your ClassPik password')
+    expect(body).toContain('Content-Type: multipart/alternative; boundary="FIXED"')
+    expect(body.endsWith('\r\n.\r\n')).toBe(true)
+  })
+
+  it('refuses to submit to an address that could carry a second header', async () => {
+    const server = smtpServer([])
+    const injected = compose(
+      'verify',
+      'ada@uni.test\r\nBcc: attacker@evil.test',
+      'https://classpik.test/verify?token=abc',
+      { from: FROM },
+      { at: 0, messageId: '<one@classpik.app>' }
+    )
+    await expect(transportFor(server).sendMail(injected)).rejects.toThrow(PermanentDeliveryError)
+    expect(server.connects).toBe(0)
   })
 
   it('reads a multiline EHLO as one reply and picks a mechanism the server offered', async () => {

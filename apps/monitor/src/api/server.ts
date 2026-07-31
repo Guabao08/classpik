@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
-import { preferencesOf, type Repo, type SectionRow, type SessionRow, type UserPreferences, type UserRow } from '../core/repo.js'
+import { preferencesOf, type AuthTokenRow, type Repo, type SectionRow, type SessionRow, type UserPreferences, type UserRow } from '../core/repo.js'
 import { parseLevels } from '../core/levels.js'
 import type { Poller } from '../core/poller.js'
 import type { SubjectDiscovery } from '../core/discovery.js'
@@ -10,18 +10,24 @@ import { assertMailbox } from '../core/mime.js'
 import {
   bearerToken,
   burnPasswordWork,
+  EMAIL_VERIFY_TTL_MS,
   hashPassword,
+  hashRecoveryToken,
   hashSessionToken,
   KdfBusyError,
   lockoutMsFor,
   looksLikeEmail,
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
+  mintRecoveryToken,
   mintSessionToken,
   normalizeEmail,
+  PASSWORD_RESET_TTL_MS,
   SESSION_TTL_MS,
   verifyPassword,
+  type TokenPurpose,
 } from '../core/auth.js'
+import type { AccountMail, AccountMailKind } from '../core/accountmail.js'
 
 /**
  * REST API over node:http. No framework, because the whole surface is a dozen
@@ -37,6 +43,27 @@ export interface RateLimitConfig {
   pollMinIntervalMs?: number
   /** Subjects one source address may seed per hour. Each one buys an upstream fetch. */
   seedsPerHour?: number
+  /** Verification and reset links one source address may ask for per hour. */
+  recoveryPerHour?: number
+  /**
+   * Links one ACCOUNT may be mailed per hour FROM ONE SOURCE ADDRESS. The
+   * address belongs to a student who did not necessarily ask for any of them,
+   * so this is a limit on what we do to a stranger's inbox rather than on what
+   * a caller may do to us. Exceeding it is silent: see the reset request route.
+   *
+   * Keyed on the source as well as the account because a cap on the account
+   * alone is a denial of recovery: five requests an hour from a cron drained a
+   * named victim's whole allowance, and the victim asking from their own
+   * machine then got the same confident 202 and no link, forever.
+   */
+  recoveryPerAccountPerHour?: number
+  /**
+   * The mail-bomb ceiling: links one ACCOUNT may be mailed per hour from ALL
+   * sources together. Deliberately looser than the per-source cap above, since
+   * its job is bounding what lands in a stranger's inbox rather than deciding
+   * whether any one caller is being reasonable.
+   */
+  recoveryPerAccountTotalPerHour?: number
 }
 
 export interface ApiDeps {
@@ -45,6 +72,13 @@ export interface ApiDeps {
   dispatcher?: Dispatcher
   /** Enables the subject catalogue routes. Absent means browsing cannot seed. */
   discovery?: SubjectDiscovery
+  /**
+   * How a verification or reset link reaches a student. Always wired by
+   * `index.ts`, with or without a mail provider behind it, because a service
+   * that cannot issue a reset link is a service where a forgotten password
+   * means a new account.
+   */
+  accountMail?: AccountMail
   /** Allowed browser origins. Empty means same-origin only. */
   corsOrigins?: string[]
   /**
@@ -54,6 +88,17 @@ export interface ApiDeps {
   adminToken?: string | null
   /** Development only. Lets a watch point at a webhook on loopback. */
   allowPrivateWebhooks?: boolean
+  /**
+   * The header a TRUSTED proxy writes the real client address into, e.g.
+   * `Fly-Client-IP` or `X-Forwarded-For`. Unset means the socket address, which
+   * is correct only when this process is the thing clients connect to. Behind a
+   * proxy, leaving it unset collapses every per-address rate limit into one
+   * global bucket, because every request then arrives from the proxy. Opt-in
+   * rather than automatic: a header any client can write is a rate limit any
+   * client can walk around, so this is only safe once something in front of us
+   * is known to overwrite it.
+   */
+  clientIpHeader?: string | null
   rateLimit?: RateLimitConfig
   /** Injectable so tests can move time without sleeping. */
   now?: () => number
@@ -63,6 +108,10 @@ interface Limits {
   auth: RateLimiter
   signup: RateLimiter
   seed: RateLimiter
+  recovery: RateLimiter
+  /** Keyed on `${userId}|${purpose}|${sourceAddress}`. See `issueRecovery`. */
+  recoveryPerAccount: RateLimiter
+  recoveryPerAccountTotalPerHour: number
   pollMinIntervalMs: number
   lastPollAt: number
 }
@@ -135,11 +184,21 @@ route('GET', '/health', () => ({ status: 200, body: { ok: true } }), 'public')
 route(
   'GET',
   '/api/stats',
-  ({ repo, dispatcher }) => ({
+  ({ repo, dispatcher, accountMail }) => ({
     // Channels are advertised so a client can offer email only where the server
     // can actually send it, instead of finding out from a rejected watch.
     status: 200,
-    body: { ...repo.stats(), channels: dispatcher?.channels ?? [] },
+    body: {
+      ...repo.stats(),
+      channels: dispatcher?.channels ?? [],
+      // A separate fact from `channels`, which is about seat alerts. This one
+      // says whether a verification or reset link reaches a mailbox at all. With
+      // no provider configured the link is printed to the operator's log, and
+      // the recovery screens used to say "check your email" anyway, which is how
+      // a student who cannot sign in ends up creating a second account. The UI
+      // can only tell them the truth if it can see this.
+      accountMail: accountMail?.enabled ?? false,
+    },
   }),
   'public'
 )
@@ -272,12 +331,7 @@ route(
     const password = required(str(b.password), 'password')
 
     if (!looksLikeEmail(email)) throw new HttpError(400, 'that does not look like an email address')
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      throw new HttpError(400, `password must be at least ${MIN_PASSWORD_LENGTH} characters`)
-    }
-    if (password.length > MAX_PASSWORD_LENGTH) {
-      throw new HttpError(400, `password must be at most ${MAX_PASSWORD_LENGTH} characters`)
-    }
+    assertPasswordLength(password)
 
     // Where this student is shopping, chosen here and changeable later. Read
     // and validated before the password is hashed, so a malformed school id
@@ -303,10 +357,229 @@ route(
     // unavoidable, since the alternative is silently not creating an account.
     if (!user) throw new HttpError(409, 'that email already has an account')
 
+    // Started, not awaited, and best effort either way. The account exists and
+    // the session in the response below is real, so a provider taking fifteen
+    // seconds must not make signup take fifteen seconds, and a provider having a
+    // bad minute must not turn a created account into a 500 that tells the
+    // student they have none. The token row is written before the first await,
+    // so the link is valid the instant it goes out.
+    // `POST /api/auth/verify/request` is the retry, and it is one click.
+    void offerVerification(ctx, user)
+
     return { status: 201, body: issueSession(ctx, req, user) }
   },
   'public'
 )
+
+// -------------------------------------------------------- account recovery
+
+/**
+ * Resend the verification link, for the student who deleted it or never got it.
+ *
+ * Authenticated, because the address it mails is the one on the session and
+ * there is nothing here for a stranger to aim. Rate limited twice over anyway:
+ * per source address, which is what stops a script, and per account, which is
+ * what stops one address being mailed two hundred times by someone who signed
+ * up as it.
+ */
+route('POST', '/api/auth/verify/request', async (ctx) => {
+  const user = principal(ctx)
+  spendRecoveryAttempt(ctx)
+
+  if (user.email_verified_at !== null) {
+    // Not an error. A second tab, a double click, or a link opened on the phone
+    // while the laptop still shows the button all land here, and telling
+    // somebody their address is already confirmed is the useful answer.
+    return { status: 200, body: { ok: true, verified: true, sent: false } }
+  }
+
+  const sent = await offerVerification(ctx, user)
+  return { status: 200, body: { ok: true, verified: false, sent } }
+})
+
+/**
+ * Consume a verification link.
+ *
+ * Public, because the person opening it is on whatever device their mail is on
+ * and may never have signed in there. The token is the whole credential, which
+ * is exactly why it is 256 random bits, single use and 24 hours old at most.
+ */
+route(
+  'POST',
+  '/api/auth/verify',
+  (ctx, _req, _url, body) => {
+    spendAuthAttempt(ctx)
+    const token = required(str(asObject(body).token), 'token')
+    const consumed = consumeFor(ctx, token, 'verify_email')
+
+    const user = ctx.repo.getUser(consumed.user_id)
+    if (!user) throw new HttpError(400, VERIFY_REFUSAL)
+    // The token proves control of the mailbox it was sent to, and of nothing
+    // else. An address changed between issuing and opening the link is a
+    // different mailbox, so the proof does not travel with the account.
+    if (consumed.email_norm !== user.email_norm) throw new HttpError(400, VERIFY_REFUSAL)
+
+    ctx.repo.markEmailVerified(user.id, ctx.now())
+    return { status: 200, body: { ok: true, email: user.email } }
+  },
+  'public'
+)
+
+/**
+ * Ask for a password reset link.
+ *
+ * The one rule that matters here: **this route answers identically whether or
+ * not the address has an account.** Same status, same body, and the same
+ * latency, because all three are oracles. `POST /api/auth/login` already goes to
+ * the trouble of burning scrypt time on an unknown address so that its timing
+ * matches, and there is a test pinning it; an enumeration hole here would undo
+ * that work with one endpoint that needs no password at all.
+ *
+ * So three things are true of the code below, and each is load-bearing:
+ *
+ *  - Nothing about the outcome reaches the response. The body is a constant.
+ *  - NO work whose existence depends on the lookup happens before the response
+ *    is written. Not awaiting the send is not enough on its own: an async
+ *    function body runs synchronously up to its first await, and the first await
+ *    inside `issueRecovery` is the send itself, so the budget check, the
+ *    randomBytes and the INSERT all used to land on the response path. Measured
+ *    against 5000 rows that was a deterministic sub-millisecond difference
+ *    between the two branches, which a few dozen samples separate cleanly. The
+ *    whole call therefore goes behind `setImmediate`.
+ *  - The per-account throttle is silent. Answering 429 to the sixth request for
+ *    a real address, and 202 to the sixth for a fictional one, is the same
+ *    oracle wearing a status code. Only the per-source-address limit is allowed
+ *    to speak, and that one does not depend on which address was named.
+ *
+ * The silence has a cost, and it is a real one rather than a free win: a caller
+ * cannot tell a throttled request from a delivered one, so a student whose
+ * allowance somebody else has drained gets a confident 202 and no mail, with no
+ * way to tell that from a delivery problem. That is why the tight budget in
+ * `issueRecovery` is keyed on the source address as well as the account. See
+ * the note there for what each half of that budget is for.
+ *
+ * The deferral costs the exactness of the per-account budget: two simultaneous
+ * requests can both read the token count before either writes a row, so the
+ * ceiling is approximate. That is the right trade. An off-by-one on how many
+ * links reach a mailbox in an hour is a nuisance; an enumeration oracle over
+ * which addresses at a university have accounts is the thing this route exists
+ * to prevent.
+ */
+route(
+  'POST',
+  '/api/auth/reset/request',
+  (ctx, _req, _url, body) => {
+    spendRecoveryAttempt(ctx)
+    const email = required(str(asObject(body).email), 'email')
+
+    const user = looksLikeEmail(email) ? ctx.repo.findUserByEmail(normalizeEmail(email)) : null
+    if (user) {
+      // Deferred a whole turn of the event loop, not merely un-awaited, and the
+      // rejection is swallowed rather than logged with the address attached. See
+      // the note above: what we know about this address is the thing the
+      // endpoint exists not to disclose, and that includes how long we took.
+      setImmediate(() => {
+        void issueRecovery(ctx, user, 'reset_password').catch(() => {})
+      })
+    }
+
+    return { status: 202, body: { ok: true, message: RESET_REQUESTED } }
+  },
+  'public'
+)
+
+/**
+ * Consume a reset link and set a new password.
+ *
+ * Every live session dies with the old password. A reset is what somebody does
+ * after losing control of their account, and a reset that leaves the intruder's
+ * thirty-day bearer token working has changed nothing they would notice.
+ */
+route(
+  'POST',
+  '/api/auth/reset',
+  async (ctx, _req, _url, body) => {
+    spendAuthAttempt(ctx)
+    const b = asObject(body)
+    const token = required(str(b.token), 'token')
+    const password = required(str(b.password), 'password')
+    assertPasswordLength(password)
+
+    // Hashed BEFORE the link is spent, never after.
+    //
+    // `hashPassword` throws KdfBusyError once the KDF queue is full, and that
+    // queue is reachable from the unauthenticated login route by design, so a
+    // burst of logins used to turn any reset landing in the same window into a
+    // 503 with `consumed_at` already set: a dead link, an unchanged password,
+    // and five such collisions exhausting the account's whole hourly allowance.
+    // Hashing first makes consume-then-write the last thing that can fail.
+    //
+    // It costs nothing new. The work is bounded above by assertPasswordLength
+    // and by spendAuthAttempt, and it is exactly the scrypt time
+    // POST /api/auth/login already pays for an address it has never seen.
+    const passwordHash = await hashPassword(password)
+
+    const consumed = consumeFor(ctx, token, 'reset_password')
+    const user = ctx.repo.getUser(consumed.user_id)
+    if (!user) throw new HttpError(400, RESET_REFUSAL)
+    // As on verification: the link is proof about the mailbox it was mailed to.
+    if (consumed.email_norm !== user.email_norm) throw new HttpError(400, RESET_REFUSAL)
+
+    ctx.repo.completePasswordReset(user.id, passwordHash, ctx.now())
+    // No session in the response. Signing in with the password they have just
+    // chosen is one step, and it is the step that proves the reset worked; a
+    // token handed back here would instead be the second thing in this flow
+    // that grants access without one.
+    return { status: 200, body: { ok: true } }
+  },
+  'public'
+)
+
+/**
+ * Change the password of an account somebody is signed in to.
+ *
+ * The current password is required even though the session already
+ * authenticates the caller, because those authenticate different things. The
+ * session says this browser was signed in at some point; the password says the
+ * person at the keyboard right now is the account holder. A borrowed laptop or
+ * a stolen token should not be enough to lock the owner out of their own
+ * account.
+ *
+ * Every OTHER session is revoked and the caller keeps theirs. That is the whole
+ * point of the route: it is how a leaked token becomes recoverable in one
+ * request, rather than by waiting out a thirty day TTL on a session you have no
+ * way to name.
+ */
+route('POST', '/api/auth/password', async (ctx, _req, _url, body) => {
+  const user = principal(ctx)
+  const session = ctx.session
+  if (!session) throw new HttpError(401, 'authentication required')
+
+  const b = asObject(body)
+  const current = required(str(b.currentPassword), 'currentPassword')
+  const next = required(str(b.password), 'password')
+  assertPasswordLength(next)
+
+  // Spent on the way in, not only on failure. This route runs two scrypt hashes
+  // and is reachable with one stolen token, so the budget is what stops it being
+  // a way to spend the KDF pool.
+  spendAuthAttempt(ctx)
+
+  if (!(await verifyPassword(current, user.password_hash))) {
+    // No lockout counter here. This route needs a live session, so it is not a
+    // path a stranger can walk from an address alone, and incrementing the same
+    // counter the login route reads would let a borrowed tab lock its owner out.
+    throw new HttpError(403, 'that is not your current password')
+  }
+
+  const revoked = ctx.repo.completePasswordChange(
+    user.id,
+    await hashPassword(next),
+    session.token_hash,
+    ctx.now()
+  )
+  return { status: 200, body: { ok: true, sessionsRevoked: revoked } }
+})
 
 /**
  * One answer for every way a login can fail.
@@ -576,6 +849,26 @@ route('POST', '/api/watches', (ctx, _req, _url, body) => {
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : 'invalid email address')
     }
+    // What being unverified actually costs, and it is the only thing it costs.
+    //
+    // Signup takes an address on trust, so without this anybody can sign up as
+    // somebody else's address and have ClassPik mail alerts to it from our own
+    // sending domain, indefinitely, with no route the recipient can use to stop
+    // it. That is the same abuse the caller-supplied `target` above was closed
+    // for, reached by a different door. Proving the mailbox is what closes it.
+    //
+    // It is checked after the target rule so that aiming a watch at a stranger
+    // still answers the refusal about aiming, which is the more specific fact.
+    // Everything else on the account keeps working: an unverified student can
+    // search, watch, and read every alert in the app. Only the channel that
+    // reaches a mailbox is withheld, because the mailbox is the unproved part.
+    if (user.email_verified_at === null) {
+      throw new HttpError(
+        403,
+        'confirm your email address before sending alerts to it; ' +
+          'POST /api/auth/verify/request will send the link again'
+      )
+    }
   }
 
   const watch = repo.createWatch({ userId: user.id, sectionId, mode, channel, target })
@@ -675,6 +968,21 @@ export function createApi(deps: ApiDeps): Server {
       capacity: deps.rateLimit?.seedsPerHour ?? 20,
       refillMs: 60 * 60_000,
     }),
+    // Asking us to mail somebody costs a message in a mailbox we do not own, so
+    // it gets a slower budget than logging in does. Ten an hour is more than a
+    // person who lost a link ever needs and far less than a mail flood.
+    recovery: new RateLimiter({
+      capacity: deps.rateLimit?.recoveryPerHour ?? 10,
+      refillMs: 60 * 60_000,
+    }),
+    // The tight half of the per-account budget, and the reason it is a bucket
+    // rather than a COUNT over auth_tokens: the key carries the source address,
+    // and auth_tokens has no column for one. See `issueRecovery`.
+    recoveryPerAccount: new RateLimiter({
+      capacity: deps.rateLimit?.recoveryPerAccountPerHour ?? 5,
+      refillMs: 60 * 60_000,
+    }),
+    recoveryPerAccountTotalPerHour: deps.rateLimit?.recoveryPerAccountTotalPerHour ?? 20,
     pollMinIntervalMs: deps.rateLimit?.pollMinIntervalMs ?? 30_000,
     lastPollAt: 0,
   }
@@ -734,7 +1042,7 @@ async function handle(
     user: found?.user ?? null,
     session: found?.session ?? null,
     limits,
-    clientIp: clientIpOf(req),
+    clientIp: clientIpOf(req, deps.clientIpHeader ?? null),
   }
 
   let body: unknown = null
@@ -766,15 +1074,40 @@ async function handle(
 }
 
 /**
- * The source address as the kernel sees it.
+ * Who to charge a rate limit to.
  *
- * Deliberately not `X-Forwarded-For`: this process listens directly today, so a
- * header any client can write would be a rate limit any client can walk around
- * by changing one string. Behind a proxy this needs a trusted-hop count, and
- * that decision belongs to whoever configures the proxy.
+ * The socket address by default, because a header any client can write is a
+ * rate limit any client can walk around by changing one string. But the default
+ * deployment in the README puts fly-proxy in front of this, and there every
+ * request arrives from the proxy: all five limiters collapse into one global
+ * bucket, so twenty login attempts a minute becomes twenty for the entire user
+ * base and the tenth reset link in an hour is the last one anybody gets. That
+ * failure is invisible from inside the process, which is why it needed saying
+ * out loud in the deployment notes rather than only here.
+ *
+ * So the proxy header is opt-in, by name, through `CLASSPIK_CLIENT_IP_HEADER`.
+ * Setting it is a promise that something in front of us overwrites that header
+ * on every request; unset behind a proxy is wrong in the direction of throttling
+ * real students, and set without a proxy is wrong in the direction of throttling
+ * nobody at all.
  */
-function clientIpOf(req: IncomingMessage): string {
-  return req.socket.remoteAddress ?? 'unknown'
+function clientIpOf(req: IncomingMessage, header: string | null): string {
+  const socketAddress = req.socket.remoteAddress ?? 'unknown'
+  if (!header) return socketAddress
+
+  const raw = req.headers[header.toLowerCase()]
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (!value) return socketAddress
+
+  // The RIGHTMOST entry, not the first. `X-Forwarded-For` is a list each hop
+  // appends to, so a caller who sends one of their own gets the proxy's view of
+  // them appended after it. Reading the first entry would let any client pick
+  // their own bucket key, which is the exact hole that trusting this header
+  // usually opens. One trusted hop is assumed, which is what every platform in
+  // the deployment notes puts in front of this; a second one needs this to count
+  // back further, deliberately, rather than to guess.
+  const hops = value.split(',').map((s) => s.trim()).filter((s) => s !== '')
+  return hops[hops.length - 1] ?? socketAddress
 }
 
 /** Spends one token from the shared login and signup budget for this address. */
@@ -782,6 +1115,127 @@ function spendAuthAttempt(ctx: Ctx): void {
   if (ctx.limits.auth.take(ctx.clientIp, ctx.now())) return
   const seconds = ctx.limits.auth.retryAfterSeconds(ctx.clientIp, ctx.now())
   throw new HttpError(429, `too many attempts from this address, try again in ${seconds}s`)
+}
+
+/**
+ * The budget for asking us to mail somebody a link.
+ *
+ * Separate from the auth budget and slower than it, because the cost of this
+ * one lands in a mailbox rather than on our CPU. It depends on the source
+ * address and on nothing about the account named, which is what lets the public
+ * reset route spend it without answering the question it exists not to answer.
+ */
+function spendRecoveryAttempt(ctx: Ctx): void {
+  if (ctx.limits.recovery.take(ctx.clientIp, ctx.now())) return
+  const seconds = ctx.limits.recovery.retryAfterSeconds(ctx.clientIp, ctx.now())
+  throw new HttpError(429, `too many link requests from this address, try again in ${seconds}s`)
+}
+
+/** One message for every way a link can be refused: unknown, spent, expired, wrong purpose. */
+const VERIFY_REFUSAL = 'that verification link is not valid; ask for a new one'
+const RESET_REFUSAL = 'that reset link is not valid; ask for a new one'
+const RESET_REQUESTED =
+  'if that address has a ClassPik account, a reset link is on its way to it'
+
+function assertPasswordLength(password: string): void {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    throw new HttpError(400, `password must be at least ${MIN_PASSWORD_LENGTH} characters`)
+  }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    throw new HttpError(400, `password must be at most ${MAX_PASSWORD_LENGTH} characters`)
+  }
+}
+
+/**
+ * Spend a link, or refuse in the one way every refusal is spelled.
+ *
+ * A token that never existed, one already used, one that expired and one minted
+ * for the other purpose all produce the identical 400. Distinguishing them tells
+ * a caller feeding us guesses which of their guesses had the right shape, and
+ * "already used" in particular would confirm that an account exists and that
+ * somebody recently reset it.
+ */
+function consumeFor(ctx: Ctx, token: string, purpose: TokenPurpose): AuthTokenRow {
+  const consumed = ctx.repo.consumeAuthToken(hashRecoveryToken(token), purpose, ctx.now())
+  if (!consumed) {
+    throw new HttpError(400, purpose === 'verify_email' ? VERIFY_REFUSAL : RESET_REFUSAL)
+  }
+  return consumed
+}
+
+/**
+ * Mint a link and send it, subject to the per-account budget.
+ *
+ * The budget is on the account rather than on the caller because the harm it
+ * prevents lands on the mailbox: without it, one address plus a rotating source
+ * address is a way to have ClassPik mail a stranger all afternoon from its own
+ * sending domain, which is the same shape as the watch-target mail bomb the
+ * README describes closing. Over budget returns false and sends nothing, and
+ * every caller treats that exactly as it treats a successful send.
+ *
+ * It is TWO budgets, and the split is the whole point. A single cap keyed on the
+ * account alone made this an indefinite, undetectable denial of recovery: five
+ * requests an hour from one cron drained a named victim's allowance forever, and
+ * because the reset route is deliberately silent about the throttle the victim
+ * got a confident 202, no link, and no way to tell that from a mail problem.
+ *
+ *  - The TIGHT cap is per (account, errand, source address), and it is what one
+ *    caller can spend. A stranger draining it takes nothing from the student
+ *    asking from their own machine, who has their own key.
+ *  - The LOOSE backstop is per (account, errand), whoever asks, and it is the
+ *    mail-bomb ceiling: it bounds what lands in an inbox that never asked for
+ *    any of this, which is the harm the original budget was written for.
+ *
+ * The tight one is a token bucket rather than a COUNT over `auth_tokens`,
+ * because the key needs the source address and that table has no column for one.
+ * A bucket lives in memory and per process, so several workers each hold their
+ * own, which is the same approximation every other limiter here already makes.
+ */
+async function issueRecovery(ctx: Ctx, user: UserRow, purpose: TokenPurpose): Promise<boolean> {
+  const mail = ctx.accountMail
+  if (!mail) return false
+
+  const at = ctx.now()
+  if (!ctx.limits.recoveryPerAccount.take(`${user.id}|${purpose}|${ctx.clientIp}`, at)) return false
+  if (
+    ctx.repo.countAuthTokensSince(user.id, purpose, at - 60 * 60_000) >=
+    ctx.limits.recoveryPerAccountTotalPerHour
+  ) {
+    return false
+  }
+
+  const token = mintRecoveryToken()
+  ctx.repo.createAuthToken({
+    userId: user.id,
+    purpose,
+    // Only the digest is stored, exactly as with a session token, so the table
+    // is worth nothing to whoever steals the file.
+    tokenHash: hashRecoveryToken(token),
+    emailNorm: user.email_norm,
+    expiresAt: at + (purpose === 'verify_email' ? EMAIL_VERIFY_TTL_MS : PASSWORD_RESET_TTL_MS),
+  })
+
+  const kind: AccountMailKind = purpose === 'verify_email' ? 'verify' : 'reset'
+  await mail.send(kind, user.email, token)
+  return true
+}
+
+/**
+ * Try to get a verification link to a newly created or unverified account.
+ *
+ * Never throws. Signup already succeeded by the time this runs, and a mail
+ * provider having a bad minute must not turn a created account into a 500 that
+ * tells the student they have none.
+ */
+async function offerVerification(ctx: Ctx, user: UserRow): Promise<boolean> {
+  try {
+    return await issueRecovery(ctx, user, 'verify_email')
+  } catch {
+    // Silently, and without the address: the failure is ours, the retry is one
+    // click on /api/auth/verify/request, and a log line naming who signed up
+    // when is a record we have no reason to keep.
+    return false
+  }
 }
 
 /**
@@ -841,6 +1295,9 @@ function toUserDto(u: UserRow) {
     id: u.id,
     email: u.email,
     createdAt: u.created_at,
+    // Sent because it changes what the account can do, and a UI that cannot see
+    // it can only explain the refused email watch after the fact.
+    emailVerified: u.email_verified_at !== null,
     // The scope the client will get on search unless it says otherwise, sent
     // so the UI can show it rather than having to guess what the server did.
     school: prefs.schoolId,

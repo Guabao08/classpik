@@ -9,14 +9,18 @@ import Footer from './sections/Footer'
 import AppShell from './app/AppShell'
 import SignInView from './app/SignInView'
 import SignUpView from './app/SignUpView'
+import VerifyView from './app/VerifyView'
+import ForgotView from './app/ForgotView'
+import ResetView from './app/ResetView'
 import Reveal from './components/Reveal'
 import { SectionLabel } from './components/ui'
 import { navigate, safePath, usePath } from './lib/router'
 import { useSession } from './lib/session'
 
 /**
- * Four screens on real paths: the landing page, the product, and the two ways
- * in. Everything else falls through to the landing page rather than to a blank
+ * Seven screens on real paths: the landing page, the product, the two ways in,
+ * the two an emailed link opens, and the one that asks for such a link.
+ * Everything else falls through to the landing page rather than to a blank
  * screen, since an unknown path here is a mistyped link, not a lost visitor.
  */
 export default function App() {
@@ -70,6 +74,22 @@ export default function App() {
     )
   }
 
+  // None of these three waits on `session.checked`, and none redirects a
+  // signed-in visitor away. The link is opened wherever the mail was read,
+  // which is routinely a phone that has never signed in, and bouncing somebody
+  // to /login off a confirmation link is asking them to do the thing the link
+  // exists to make possible.
+  if (route === '/verify') return <VerifyView token={token(params)} />
+  if (route === '/forgot') return <ForgotView />
+
+  // /reset is where the mailed link lands, so it always carries a token. Without
+  // one this is a typed path or a stale bookmark, and what that person wants is
+  // the form at /forgot, not an empty password box with nothing to submit to.
+  if (route === '/reset') {
+    const t = token(params)
+    return t === null ? <Redirect to="/forgot" /> : <ResetView token={t} />
+  }
+
   if (route === '/signup') {
     if (!session.checked) return <Loading />
     return (
@@ -110,6 +130,19 @@ function Offline({ message }: { message: string }) {
       </div>
     </div>
   )
+}
+
+/**
+ * The credential out of an emailed link, or null.
+ *
+ * `?token=` with nothing after it is a link a mail client truncated, and it is
+ * missing rather than wrong: sending the empty string to the monitor buys a
+ * refusal that reads as a bad token when the real answer is that the link did
+ * not survive the trip.
+ */
+function token(params: URLSearchParams): string | null {
+  const raw = params.get('token')
+  return raw === null || raw === '' ? null : raw
 }
 
 /** `/app/` and `/app` are the same screen. Only the root keeps its slash. */

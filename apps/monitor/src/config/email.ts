@@ -1,6 +1,7 @@
 import { mailboxOf } from '../core/mime.js'
-import { ResendTransport } from '../core/email.js'
+import { ResendTransport, type EmailIdentity } from '../core/email.js'
 import { SmtpTransport } from '../core/smtp.js'
+import type { AccountMailer } from '../core/accountmail.js'
 import type { Transport } from '../core/notify.js'
 
 /**
@@ -21,6 +22,15 @@ import type { Transport } from '../core/notify.js'
 export interface EmailSetup {
   provider: 'resend' | 'smtp'
   transport: Transport
+  /**
+   * The same object as `transport`, seen through the narrower interface the
+   * account emails need. One provider, one set of credentials, one sending
+   * domain: a verification link that arrives from a different address than the
+   * alerts do is one a student has every reason to distrust.
+   */
+  mailer: AccountMailer
+  /** Who the messages come from, which the account emails compose against. */
+  identity: EmailIdentity
   /** For a log line at startup, safe to print. */
   detail: string
 }
@@ -47,10 +57,15 @@ export function emailFromEnv(env: NodeJS.ProcessEnv = process.env): EmailSetup |
     throw new Error(`CLASSPIK_EMAIL_FROM is not usable: ${err instanceof Error ? err.message : err}`)
   }
 
+  const identity: EmailIdentity = { from, replyTo }
+
   if (provider === 'resend') {
+    const transport = new ResendTransport({ apiKey: demand(env, 'RESEND_API_KEY'), from, replyTo })
     return {
       provider,
-      transport: new ResendTransport({ apiKey: demand(env, 'RESEND_API_KEY'), from, replyTo }),
+      transport,
+      mailer: transport,
+      identity,
       detail: `resend as ${from}`,
     }
   }
@@ -78,18 +93,22 @@ export function emailFromEnv(env: NodeJS.ProcessEnv = process.env): EmailSetup |
   // through to a cleartext send whenever the EHLO reply omitted STARTTLS.
   const requireTls = !falsy(env.CLASSPIK_SMTP_REQUIRE_TLS)
 
+  const transport = new SmtpTransport({
+    host,
+    port,
+    secure: !starttls,
+    requireTls,
+    user,
+    pass,
+    from,
+    replyTo,
+  })
+
   return {
     provider,
-    transport: new SmtpTransport({
-      host,
-      port,
-      secure: !starttls,
-      requireTls,
-      user,
-      pass,
-      from,
-      replyTo,
-    }),
+    transport,
+    mailer: transport,
+    identity,
     detail:
       `smtp ${host}:${port} ${starttls ? 'starttls' : 'implicit tls'} as ${from}` +
       (requireTls ? '' : ' (TLS NOT REQUIRED, cleartext send is allowed)'),

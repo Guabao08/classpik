@@ -9,7 +9,7 @@ Autonomous course registration for college students.
 
 | Path | What it is | Status |
 |---|---|---|
-| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 625 tests** |
+| [`apps/monitor`](apps/monitor) | The class watcher. Polls public catalogs, detects seat openings, notifies watchers. | **Built, 771 tests** |
 | [`apps/web`](apps/web) | Landing page and the watcher UI, wired to the monitor API. | Built |
 | *(not started)* | The local agent that performs enrollment. | Blocked on Phase 0 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Every design decision and why. | |
@@ -67,9 +67,22 @@ strategy, the SIS adapter design, and the known risks.
 The watcher is real and tested. The Banner public search path has been **run
 against a live install**: Georgia Tech, on 2026-07-29, logged out, returning 1751
 CS sections with real seat counts, and `apps/monitor/schools/gatech.yaml` is
-committed with every value read off those responses (`enabled: false`, because
-turning it on starts continuous traffic at a real university). The PeopleSoft
-adapter has never met a live install, and neither has enrollment.
+committed with every value read off those responses.
+
+That file ships **`enabled: true`**, and it is worth being exact about what that
+does. Enabled alone costs zero upstream requests: a Banner school carries no term
+list in its config, and `registerSchool` seeds poll targets only for schools that
+already have terms, so a fresh install makes no request at Georgia Tech at all.
+What starts real traffic is the CLI, in this order:
+
+```bash
+npm run cli -- terms gatech          # one discovery request
+npm run cli -- subjects gatech 202608
+npm run cli -- seed gatech 202608    # from here on, polling at a 5 minute floor
+```
+
+Turning it back off is the one flag. The PeopleSoft adapter has never met a live
+install, and neither has enrollment.
 
 The enrollment half is not started, and it is gated on one unanswered question:
 **will a course registration system accept an enrollment request replayed by a

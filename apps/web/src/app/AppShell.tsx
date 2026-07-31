@@ -3,7 +3,9 @@ import { Logo } from '../components/ui'
 import SearchView from './SearchView'
 import WatchlistView from './WatchlistView'
 import AlertsView from './AlertsView'
+import AccountView from './AccountView'
 import ScopeSwitcher from './ScopeSwitcher'
+import VerifyBanner from './VerifyBanner'
 import { useSchools } from '../lib/catalog'
 import {
   api,
@@ -16,7 +18,9 @@ import {
   type Watch,
 } from '../lib/api'
 
-export type View = 'search' | 'watchlist' | 'alerts'
+// Account is not in `nav` below on purpose: it is reached from the card with the
+// address on it, because that card is the question it answers.
+export type View = 'search' | 'watchlist' | 'alerts' | 'account'
 export type Mode = 'notify' | 'claim'
 
 const nav: { id: View; label: string; icon: React.ReactNode }[] = [
@@ -155,7 +159,21 @@ export default function AppShell({
 
   // The server says what it can deliver. Offering email where no provider is
   // configured would be a button that fails at the one moment it matters.
-  const emailReady = (stats?.channels ?? []).includes('email')
+  //
+  // The second half is the account's own address. The monitor refuses an email
+  // watch until somebody has opened a link sent to it, because signup takes an
+  // address on trust and otherwise anyone could sign up as a stranger's address
+  // and have us mail them. Both conditions have to hold, and they fail
+  // differently: no provider is the operator's problem, unverified is one this
+  // student can fix from the banner below.
+  const emailConfigured = (stats?.channels ?? []).includes('email')
+  const emailReady = emailConfigured && user.emailVerified
+  const needsVerifying = emailConfigured && !user.emailVerified
+  // Whether the confirmation link the button below asks for reaches a mailbox
+  // at all, rather than the operator's log. Separate from `channels`, which is
+  // about seat alerts, and the reason the resend button can stop claiming a
+  // send that did not happen.
+  const mailEnabled = stats?.accountMail ?? false
 
   return (
     <div className="flex min-h-screen bg-ink">
@@ -243,16 +261,37 @@ export default function AppShell({
         <ScopeSwitcher user={user} onUser={onUser} />
 
         <div className="mt-auto space-y-3 pt-6">
-          <div className="rounded-xl border border-line bg-white/3 p-3.5">
+          <div
+            className={`rounded-xl border p-3.5 transition-colors ${
+              view === 'account' ? 'border-open/30 bg-open/8' : 'border-line bg-white/3'
+            }`}
+          >
             <p className="truncate text-xs font-semibold" title={user.email}>
               {user.email}
             </p>
-            <button
-              onClick={onSignOut}
-              className="mt-1.5 text-[11px] text-muted transition-colors hover:text-bright"
-            >
-              Sign out
-            </button>
+            {/* Unconfirmed is worth saying here too. The banner is dismissed by
+                scrolling, and this card is the one place the address is always
+                visible. */}
+            {needsVerifying && <p className="mt-1 text-[11px] text-wait">Not confirmed</p>}
+            <div className="mt-1.5 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setView('account')
+                  setMenuOpen(false)
+                }}
+                className={`text-[11px] transition-colors hover:text-bright ${
+                  view === 'account' ? 'font-semibold text-open' : 'text-muted'
+                }`}
+              >
+                Account
+              </button>
+              <button
+                onClick={onSignOut}
+                className="text-[11px] text-muted transition-colors hover:text-bright"
+              >
+                Sign out
+              </button>
+            </div>
           </div>
 
           <div className="rounded-xl border border-line bg-white/3 p-3.5">
@@ -289,6 +328,14 @@ export default function AppShell({
           </div>
         )}
 
+        {/* Not on the account screen, which says the same thing in more detail
+            and owns its own copy of the resend. Two buttons for one errand, each
+            with its own idea of whether it has been pressed, is a screen that
+            can contradict itself. */}
+        {needsVerifying && view !== 'account' && (
+          <VerifyBanner email={user.email} mailEnabled={mailEnabled} />
+        )}
+
         {loading ? (
           <div className="px-5 py-16 text-sm text-muted md:px-9">Loading…</div>
         ) : (
@@ -315,9 +362,17 @@ export default function AppShell({
               />
             )}
             {view === 'alerts' && <AlertsView events={events} />}
+            {view === 'account' && (
+              <AccountView
+                user={user}
+                emailConfigured={emailConfigured}
+                mailEnabled={mailEnabled}
+              />
+            )}
           </>
         )}
       </main>
     </div>
   )
 }
+

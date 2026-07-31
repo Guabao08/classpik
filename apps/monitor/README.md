@@ -11,7 +11,7 @@ design decision, and it is enforced at the type level: there is nowhere in
 
 ```bash
 npm install
-npm test          # 625 tests
+npm test          # 771 tests
 npm run typecheck
 npm run serve -- --demo   # runs against a simulated SIS, no real registrar
 ```
@@ -445,12 +445,19 @@ curl -s -X POST localhost:8787/api/watches -H 'Content-Type: application/json' \
   -d '{"sectionId":"demo-university:202608:30412","channel":"email"}'
 ```
 
-**Alerts go to the address on the account and nowhere else.** A caller-supplied
-`target` is refused with a 403. Accepting one made this endpoint a mail bomb:
-any account could aim every seat change on any section at a stranger, from our
-own sending domain, and the stranger had no route that could touch the watch.
-The account address itself is still unverified, which is in
-[What is not done](#what-is-not-done).
+**Alerts go to the address on the account and nowhere else, and only once that
+address has been proved.** A caller-supplied `target` is refused with a 403.
+Accepting one made this endpoint a mail bomb: any account could aim every seat
+change on any section at a stranger, from our own sending domain, and the
+stranger had no route that could touch the watch. Restricting it to the account
+address closed that door and left another one open, since signup took the
+address on trust, so the channel now also needs
+[a confirmed address](#account-recovery).
+
+The provider configured here also carries the two account emails, the
+confirmation link and the reset link. One provider, one set of credentials, one
+sending domain: a reset link arriving from a different address than the alerts do
+is one a student has every reason to distrust.
 
 ### Testing it locally
 
@@ -475,11 +482,12 @@ CLASSPIK_SMTP_STARTTLS=1 \
 npm run serve -- --demo
 ```
 
-Create an account, watch `demo-university:202608:30412` with
-`"channel":"email"`, and the alert lands in the inbox at
-http://localhost:8025 within a couple of poll cycles. This is a manual step on
-purpose: `npm test` has to pass offline, so nothing in the suite talks to a
-sink.
+Create an account and the confirmation mail is the first thing in the inbox at
+http://localhost:8025. Open its link, which needs the web app running or a
+`curl` to `POST /api/auth/verify`, then watch `demo-university:202608:30412`
+with `"channel":"email"` and the alert lands in the same inbox within a couple
+of poll cycles. This is a manual step on purpose: `npm test` has to pass
+offline, so nothing in the suite talks to a sink.
 
 Mailpit accepts anything, which makes it useful for reading the message and
 useless for judging deliverability. Alerts go to university mail filters, and a
@@ -612,7 +620,7 @@ Base URL defaults to `http://localhost:8787`.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/health` | public | Liveness |
-| `GET` | `/api/stats` | public | Counts across the service, plus the delivery `channels` this process offers |
+| `GET` | `/api/stats` | public | Counts across the service, the delivery `channels` this process offers, and `accountMail`: whether verification and reset links reach a mailbox or the log |
 | `GET` | `/api/schools` | public | Configured schools and their terms |
 | `GET` | `/api/subjects` | public | The browsable catalogue. `?school=&term=`. `seeded` says whether it has ever been fetched. |
 | `POST` | `/api/subjects/seed` | bearer | `{school, term, subject}`. Buys one subject its first fetch. 202 means queued, 200 means one was already bought, 404 means the school does not publish it. |
@@ -622,7 +630,12 @@ Base URL defaults to `http://localhost:8787`.
 | `POST` | `/api/auth/signup` | public | `{email, password, school?, term?, levels?}`, returns a session |
 | `POST` | `/api/auth/login` | public | `{email, password}`, returns a session |
 | `POST` | `/api/auth/logout` | bearer | Revokes the presented session only |
-| `GET` | `/api/auth/me` | bearer | The signed-in account, including what it searches in |
+| `POST` | `/api/auth/password` | bearer | `{currentPassword, password}`. Revokes every **other** session and keeps yours. |
+| `POST` | `/api/auth/verify/request` | bearer | Mails the confirmation link again |
+| `POST` | `/api/auth/verify` | public | `{token}`. Proves the address. Single use, 24 hours. |
+| `POST` | `/api/auth/reset/request` | public | `{email}`. Always 202, with the same body and the same timing whether or not the address exists. |
+| `POST` | `/api/auth/reset` | public | `{token, password}`. Single use, one hour, and it revokes every session. |
+| `GET` | `/api/auth/me` | bearer | The signed-in account, including what it searches in and whether its address is confirmed |
 | `POST` | `/api/auth/preferences` | bearer | `{school?, term?, levels?}`. A patch: `null` clears a field, an absent one is left alone. |
 | `POST` | `/api/watches` | bearer | `{sectionId, mode?, channel?, target?}`. `channel: "email"` always sends to the account address; a different `target` is a 403. A `webhook` target must be HTTPS and must not resolve to a private address. |
 | `GET` | `/api/watches` | bearer | The caller's active watches |
@@ -666,6 +679,15 @@ unchanged: nothing in `src/core/auth.ts` is reachable from `src/adapters`, and
   An attacker who supplies addresses that do not exist has no account to limit,
   and a per-account lockout a stranger can trigger on a named victim is a denial
   of service rather than a defence.
+  **This is only true if the monitor can see the source address.** It reads
+  `req.socket.remoteAddress`, which is the client on a direct listen and the
+  proxy behind a load balancer, and behind a proxy every limiter here collapses
+  into one global bucket: 20 sign-in attempts a minute for the entire user base,
+  ten reset links an hour for everybody together. Naming the header the proxy
+  writes, with `CLASSPIK_CLIENT_IP_HEADER`, is what restores the per-student
+  behaviour. It is opt-in because a header no proxy overwrites is a rate limit
+  every client picks for themselves. See
+  [the deployment variables](#the-environment-variables-that-matter-in-a-deployment).
 - The per-account lockout is the secondary backstop: five consecutive failures
   lock the account for a minute, and a login arriving after the window has
   elapsed clears the counter. Without that reset the escalation ratcheted to its
@@ -685,6 +707,139 @@ unchanged: nothing in `src/core/auth.ts` is reachable from `src/adapters`, and
 Routes are private by default. A new route is protected unless it says
 `'public'`, which is the only default that fails safely.
 
+### Account recovery
+
+Three gaps used to sit here, and they were the reasons a real student could not
+use this: an address was taken on trust, a forgotten password meant a new
+account, and `Repo.revokeSessionsForUser` existed with nothing calling it.
+
+All three run on one mechanism, `auth_tokens`: a 256-bit opaque secret, stored
+as its SHA-256 and never in the clear, single use, with an expiry and a purpose.
+The purpose is part of the *lookup* rather than something read off the row
+afterwards, so the 24 hour link mailed at signup can never be presented to the
+reset route, which would make it a longer-lived and more powerful secret than
+the one hour reset flow deliberately issues. Every refusal (unknown, spent,
+expired, wrong purpose) is the same 400 with the same message.
+
+**Consuming a token is one `UPDATE ... RETURNING`**, for exactly the reason
+`claimTargets` is. SQLite runs it in its own implicit transaction with the write
+lock held, so two requests carrying the same link are serialised and the second
+sees `consumed_at` already set. A SELECT-then-UPDATE would let both read before
+either wrote, and a reset that can be performed twice is one an attacker replays
+out of a mail archive after the victim has already used it.
+
+#### What being unverified actually costs
+
+**An unverified account cannot send alerts to email.** That is the whole of it,
+and it is the exact abuse: signup takes an address on trust, so without this
+anyone can sign up as somebody else's address and have ClassPik mail them from
+our own sending domain indefinitely, with no route the recipient can use to stop
+it. It is the same hole the refused caller-supplied `target` closed, reached by a
+different door.
+
+Everything else keeps working. Signin is not blocked, search is not blocked, and
+watches are not blocked; only the channel that reaches a mailbox nobody has
+proved they read. Blocking signin would punish a student for a step they may
+simply not have got to, and it would make a mail provider outage a total outage.
+`GET /api/auth/me` reports `emailVerified`, and the web app shows a banner with a
+resend button rather than a greyed-out toggle with no explanation.
+
+#### The reset request route answers the same way to everyone
+
+`POST /api/auth/reset/request` returns the identical 202 and the identical body
+whether or not the address has an account, and it returns them in the same time.
+All three are oracles. The login route already burns scrypt time on an unknown
+address so its timing matches, and there is a test pinning it; a hole here would
+undo that with an endpoint that needs no password at all.
+
+Three things make it hold, and each is load-bearing:
+
+- **Nothing about the outcome reaches the response.** The body is a constant.
+- **No work behind the lookup happens before the response is written.** Not
+  awaiting the send is one await too late on its own: an async function body runs
+  synchronously up to its first await, and the first await inside `issueRecovery`
+  is the send, so the budget check, the `randomBytes` and the `INSERT` all landed
+  on the response path. Measured against 5000 rows that was a deterministic
+  sub-millisecond difference between the two branches, which twenty samples per
+  candidate address sort out cleanly. The whole call sits behind `setImmediate`.
+  The cost is that the per-account budget becomes approximate rather than exact,
+  since two simultaneous requests can both read the count before either writes.
+  That is the right way round: an off-by-one on links per hour is a nuisance, an
+  enumeration oracle over a campus is the thing this route exists to prevent.
+- **The per-account throttle is silent, and the silence has a price.** A caller
+  cannot tell a throttled request from a delivered one, which is the point, and
+  it also means a student whose allowance somebody else drained gets a confident
+  202, no link, and no way to distinguish that from a mail problem. So the budget
+  is split rather than keyed on the account alone:
+  **five links an hour per (account, errand, source address)**, which is what any
+  one caller can spend, and **twenty an hour per account from everyone together**
+  as the mail-bomb ceiling. A cron hammering `victim@school.edu` from one address
+  therefore takes nothing from the victim asking from their own machine. Only the
+  per-source-address limit, ten an hour, is allowed to answer 429, and it does not
+  depend on which address was named.
+
+#### The link is spent last, after everything that can fail
+
+`POST /api/auth/reset` hashes the new password **before** it consumes the token,
+not after. `hashPassword` throws once the KDF queue is full, and that queue is
+reachable from the unauthenticated login route by design, so a burst of logins
+used to turn any reset landing in the same window into a 503 with `consumed_at`
+already set: a dead link, an unchanged password, and a student told to come back
+later to a link that no longer works. Five such collisions exhaust an account's
+whole hourly allowance. Hashing first costs nothing new, since the work is
+already bounded by the length check and the per-address budget above it and is
+exactly what `POST /api/auth/login` pays for an address it has never seen.
+
+#### What a completed reset does
+
+Sets the password, **revokes every session**, burns every other outstanding reset
+link, clears the lockout, and marks the address verified. Each part matters: a
+reset is what somebody does after losing control of their account, so leaving the
+intruder's thirty-day bearer token alive would change nothing they would notice;
+a panicked student clicks the button three times and two of those links are still
+live keys; forgetting a password is how you get locked out in the first place;
+and reading the link *is* the proof a verification link asks for, so requiring a
+second round trip to establish a fact already established would be ceremony.
+
+It hands back no session. Signing in with the new password is the step that
+proves the reset worked.
+
+#### Password change is the one that keeps you signed in
+
+`POST /api/auth/password` needs the current password even though the session
+already authenticates the caller, because those authenticate different things:
+the session says this browser was signed in at some point, the password says the
+person at the keyboard is the account holder. It revokes every **other** session
+and spares the caller's, which is what makes a leaked token recoverable in one
+request rather than by waiting out a thirty day TTL on a session nobody can name.
+It deliberately does not touch the login lockout counter, since a borrowed tab
+guessing here would otherwise lock the owner out through a route that already
+needs their session.
+
+#### With no email provider configured
+
+The service still works and signup still succeeds: the link is **printed to the
+log** instead of mailed. A verification step nobody can complete is worse than
+none, and a monitor that refuses to sign anybody up because nobody has signed up
+to Resend yet is a monitor nobody can try.
+
+In that mode this process is the mail transport and its console is the inbox, so
+**treat the log as sensitive**. It is printed at startup in those words, and
+louder when `CLASSPIK_APP_URL` is not localhost, because then the people opening
+those links are students who cannot read this log.
+
+**`GET /api/stats` reports `accountMail`,** which is the honest answer to "will a
+reset link reach a mailbox". It is a separate fact from `channels`, which is
+about seat alerts and says nothing about account mail. The recovery screens read
+it and say plainly that this instance cannot send mail, rather than rendering
+"Check your email" over a link that is sitting in `docker logs`. Without that,
+somebody who cannot sign in and never gets a link creates a second account, which
+strands every watch on the first one and is the exact outcome this flow exists to
+prevent.
+
+Once a provider is set, a token reaches no log line on any path, including the
+failure path. Both halves are covered by tests.
+
 ### Configuration
 
 | Variable | Default | Meaning |
@@ -695,6 +850,8 @@ Routes are private by default. A new route is protected unless it says
 | `CLASSPIK_CORS_ORIGINS` | localhost dev ports | Comma-separated allowed origins |
 | `CLASSPIK_ADMIN_TOKEN` | unset | Enables `POST /api/poll`, sent as `X-Admin-Token`. Unset means the route is off. |
 | `CLASSPIK_ALLOW_PRIVATE_WEBHOOKS` | unset | `1` lets a watch point at loopback or an RFC1918 host. Development only: it is an SSRF primitive anywhere else. |
+| `CLASSPIK_APP_URL` | `http://localhost:5173` | Where the web app lives. Verification and reset links point here, so a deployment that leaves it at the default mails students a link to their own laptop. |
+| `CLASSPIK_CLIENT_IP_HEADER` | unset | The header a **trusted** proxy writes the client address into, e.g. `Fly-Client-IP` or `X-Forwarded-For` (the last hop is read). Unset means the socket address, which is right only when this process is what clients connect to. Behind a proxy, unset turns every per-address rate limit into one global bucket. |
 
 Email delivery has its own block of variables, all optional. See
 [Email](#email).
@@ -711,6 +868,7 @@ rewrite rather than an app rewrite.
 | Table | Holds |
 |---|---|
 | `users`, `sessions` | ClassPik accounts, their live bearer sessions, and the school, term and levels each account searches in |
+| `auth_tokens` | Verification and reset links, as digests. Single use, with an expiry and a purpose. A leak of this table performs no reset. |
 | `schools`, `terms` | Loaded config |
 | `subjects` | The browsable catalogue. A row here costs zero requests; `seeded_at` is what changed that. |
 | `poll_targets` | The polling unit, one per (school, term, subject), plus the worker lease |
@@ -725,13 +883,296 @@ nothing is lost if it comes back on the next poll.
 
 ---
 
+## Deployment
+
+The thing to hold in your head is that **this service is a process that owns a
+file**. Not a request handler that happens to keep some state: a poll loop that
+must still be running at 2 AM when a senior drops the seat somebody has been
+waiting three weeks for, writing to a SQLite database that exists at one path on
+one disk.
+
+Both halves of that rule out the obvious hosts. A serverless platform ends the
+process when the request ends, so the loop never ticks, and its filesystem is
+scratch space, so the database is gone between invocations. What is needed is
+dull: one container, one persistent disk, always on.
+
+### It deploys as ONE instance
+
+Say this out loud before reading the commands.
+
+The database is a single file on a single machine's disk. Several poller
+processes may share that file **on one host**, which is what
+[Running more than one worker](#running-more-than-one-worker) describes and what
+the target lease makes safe. Several *machines* is not supported, because
+SQLite's locking is not reliable over a network filesystem and leasing is built
+directly on that locking. Two hosts would either corrupt the file or, more
+likely on a platform that gives each machine its own volume, quietly run two
+independent services with two databases, two sets of accounts, and double the
+request rate at every registrar.
+
+So: `fly scale count 1`, one Kubernetes replica, one container. **Scaling past
+one host means moving to Postgres.** That is a `src/core/repo.ts` rewrite, which
+is exactly why every statement lives in that one file, and it is not done. Grow
+this by making the machine bigger, not by adding machines.
+
+### Build and run it locally
+
+Build context is `apps/monitor`. Three stages: compile TypeScript, resolve
+production dependencies cleanly, then assemble a runtime image that contains
+node, `yaml`, the compiled `dist/`, and the school configs. No compiler, no test
+runner, no `tsx`.
+
+```bash
+cd apps/monitor
+docker build -t classpik-monitor .
+docker volume create classpik_data
+```
+
+```bash
+docker run -d --name classpik \
+  -p 8787:8787 \
+  -v classpik_data:/data \
+  -e CLASSPIK_APP_URL=http://localhost:5173 \
+  -e CLASSPIK_CORS_ORIGINS=http://localhost:5173 \
+  -e CLASSPIK_ADMIN_TOKEN="$(openssl rand -hex 32)" \
+  classpik-monitor
+```
+
+```bash
+docker logs -f classpik
+curl -s localhost:8787/health
+docker inspect --format '{{.State.Health.Status}}' classpik
+```
+
+`/health` is what the image's `HEALTHCHECK` polls, using Node's built-in
+`fetch` rather than a `curl` installed for the purpose.
+
+**The volume is not optional.** Drop `-v` and the database lands in the
+container's writable layer, where the next `docker run` of a rebuilt image
+starts from an empty file: every account, watch and event gone, with no error
+anywhere, because an empty database is a perfectly valid database. The image
+declares `/data` as a volume so the worst case is an anonymous one rather than a
+layer, but name it, so you can find it again.
+
+To watch the whole loop without touching a registrar, add `--demo`, which is
+passed straight through to the app:
+
+```bash
+docker run --rm -p 8787:8787 -v classpik_data:/data classpik-monitor --demo
+```
+
+**A fresh container polls nothing at all.** `schools/gatech.yaml` ships
+`enabled: true`, but a Banner school has no terms until somebody fetches them
+and no poll targets until somebody seeds one, so a container that has just
+started makes zero upstream requests. Giving it work is the same two commands as
+anywhere else, against the compiled CLI:
+
+```bash
+docker exec classpik node dist/cli.js terms gatech
+docker exec classpik node dist/cli.js subjects gatech 202608
+docker exec classpik node dist/cli.js seed gatech 202608
+```
+
+### The environment variables that matter in a deployment
+
+The full list is in the Configuration table under [API](#api); these are the
+ones whose default is wrong once this is not on your laptop.
+
+| Variable | Set it to | What goes wrong otherwise |
+|---|---|---|
+| `CLASSPIK_DB` | A path inside the mount, `/data/classpik.db` | The database sits in an image layer and is discarded on the next deploy |
+| `CLASSPIK_APP_URL` | The public web app origin | Verification and reset links point at `localhost:5173`, so every student gets a link to their own laptop |
+| `CLASSPIK_CORS_ORIGINS` | The same origin, comma separated if several | The browser blocks every call and the app looks broken with nothing in the monitor's log |
+| `CLASSPIK_CLIENT_IP_HEADER` | The header your proxy writes, `Fly-Client-IP` on Fly, `X-Forwarded-For` behind nginx, Caddy or an ALB | Every request looks like it came from the proxy, so all five rate limits become one global bucket: 20 sign-in attempts a minute for the whole user base, and a service-wide ceiling of ten reset links an hour that one loop can hold at zero |
+| `CLASSPIK_EMAIL_PROVIDER` | `resend` (or `smtp`), with the rest of the [Email](#email) block | Nothing is mailed. Verification and reset links are printed to the container log, so a student who forgets their password cannot recover the account. The service starts fine and says so at startup, which is not the same as being usable |
+| `CLASSPIK_ADMIN_TOKEN` | 32 random bytes, as a secret | See below |
+| `PORT` | Whatever the platform routes to, `8787` in the image | Health checks fail against a port nothing is listening on |
+| `CLASSPIK_ALLOW_PRIVATE_WEBHOOKS` | Leave unset | It is an SSRF primitive: a watch could aim our server at the platform's own metadata service |
+
+`openssl rand -hex 32` is a fine way to produce the admin token. Never commit
+it; on Fly it belongs in `fly secrets`, not in `[env]`.
+
+#### CLASSPIK_ADMIN_TOKEN, and what a deployment without one gives up
+
+`POST /api/poll` is the manual "go and look now" button, and it is **disabled
+outright when `CLASSPIK_ADMIN_TOKEN` is unset**. That is the safe default and
+the startup log says so in as many words, but the consequence is worth stating:
+a deployed instance with no admin token has no way to force a poll. You wait for
+the next tick, and after an error the ladder can have backed that off to an
+hour. There is no route an account can use instead, deliberately, because signup
+is free and a tick fans out to a registrar.
+
+Set it if you expect to operate this thing:
+
+```bash
+curl -s -X POST https://your-monitor.example/api/poll -H "X-Admin-Token: $CLASSPIK_ADMIN_TOKEN"
+```
+
+It still holds a floor of one cycle per 30 seconds, per process, however many
+operators ask.
+
+#### Email
+
+Alerts are the product, so configure this. The variables are documented in full
+under [Email](#email); the deployment-shaped version is that
+`CLASSPIK_EMAIL_PROVIDER` is unset by default, in which case the service starts
+fine, drops `email` from `GET /api/stats` channels, refuses `"channel":"email"`
+watches with a 400, and **prints verification and reset links to the log**. That
+last part is why an unconfigured deployment's log is a credential store.
+
+`resend` is the supported production path. One HTTPS POST, and the provider owns
+DKIM, MX, bounces and IP reputation:
+
+```bash
+fly secrets set \
+  CLASSPIK_EMAIL_PROVIDER=resend \
+  CLASSPIK_EMAIL_FROM='ClassPik <alerts@classpik.app>' \
+  RESEND_API_KEY=re_xxxxxxxxxxxx
+```
+
+`smtp` is there for a corporate relay or a local sink, and has never spoken to a
+production relay. Either way the provider set here also carries the two account
+emails, so the reset link and the alert arrive from the same domain.
+
+Set SPF, DKIM and DMARC on the sending domain and warm it before launch. A
+quarantined alert and a missing alert are the same failure to a student.
+
+### Fly.io
+
+`fly.toml` is committed and annotated. Fly is a reasonable default here for one
+narrow reason: it will attach a persistent volume to a single machine and keep
+that machine running, which is the entire requirement. **Render, Railway, a
+plain VPS with `docker compose`, or Kubernetes with one replica and a
+ReadWriteOnce volume are all equally correct.** What is not correct is Vercel,
+Netlify, Cloudflare Workers, or Lambda, for the reasons at the top of this
+section. Nothing in the image is Fly-specific.
+
+```bash
+cd apps/monitor
+fly launch --no-deploy --copy-config --name classpik-monitor
+fly volumes create classpik_data --region iad --size 1
+```
+
+```bash
+fly secrets set \
+  CLASSPIK_ADMIN_TOKEN="$(openssl rand -hex 32)" \
+  CLASSPIK_EMAIL_PROVIDER=resend \
+  CLASSPIK_EMAIL_FROM='ClassPik <alerts@classpik.app>' \
+  RESEND_API_KEY=re_xxxxxxxxxxxx
+```
+
+Edit the two placeholder origins in `[env]` to your real web app URL, then:
+
+```bash
+fly deploy
+fly logs
+curl -s https://classpik-monitor.fly.dev/health
+```
+
+Three settings in that file are load-bearing, and changing them breaks the
+service in ways that do not look like breakage:
+
+- **`auto_stop_machines = false`.** Fly's default stops a machine when HTTP
+  traffic goes quiet. This service does its real work with no traffic at all, so
+  an idle-suspended machine is a monitor that has silently stopped monitoring.
+- **`strategy = "immediate"`.** One machine, one volume, one writer. A strategy
+  that runs old and new together cannot attach the volume twice.
+- **`[[mounts]]` pointing at `/data`,** matching `CLASSPIK_DB`. A machine with a
+  mount declared and no volume created does not start at all, which is the
+  failure mode you want compared to the alternative.
+
+If the first boot logs `the data directory /data is not writable`, the volume
+came up owned by root and the process runs as uid 1000. The entrypoint prints
+the fix; it is a one-time step, and Fly's SSH works even while the app is
+restarting:
+
+```bash
+fly ssh console -C 'chown 1000:1000 /data'
+```
+
+Back it up. A single file on a single volume is a single thing to lose:
+
+```bash
+fly volumes snapshots list <volume-id>
+```
+
+### Pointing the web app at a deployed monitor
+
+`apps/web` reads its API base from `VITE_API_URL`, falling back to
+`http://localhost:8787`:
+
+```bash
+cd apps/web
+echo 'VITE_API_URL=https://classpik-monitor.fly.dev' > .env.production
+npm run build
+```
+
+Two things that catch people:
+
+- **Vite bakes this in at build time.** It is not read from the environment when
+  the page loads, so changing the monitor's URL means rebuilding and
+  redeploying the web app, not restarting anything.
+- **It must match `CLASSPIK_CORS_ORIGINS` on the monitor, from the other
+  direction.** `VITE_API_URL` is where the browser sends requests;
+  `CLASSPIK_CORS_ORIGINS` is the list of origins the monitor will answer. Get
+  one wrong and every call fails in the browser with nothing in the monitor's
+  log, because a rejected preflight never reaches a route.
+
+### Serving the web app
+
+Serve `apps/web/dist` from anywhere static. It has none of the constraints the
+monitor does, and exactly one requirement:
+
+**Every path must return `index.html`.** `/verify` and `/reset` are where the
+emailed links land, `/app` is what a student bookmarks, and none of them is a
+file in `dist/`. A host that looks for one returns 404, so the token was valid,
+the monitor was healthy, the code was right, and the student still could not get
+back into their account. Vite's dev server does this on its own because
+`vite.config.ts` sets `appType: 'spa'`, which is a dev-and-preview setting and
+carries nothing into a built bundle.
+
+`apps/web/public/_redirects` is committed and Vite copies `public/` into `dist/`
+verbatim, so **Netlify and Cloudflare Pages need nothing further**. Everything
+else needs the one-line equivalent:
+
+```nginx
+# nginx
+location / {
+  root /srv/classpik;
+  try_files $uri /index.html;
+}
+```
+
+```caddyfile
+# Caddy
+root * /srv/classpik
+try_files {path} /index.html
+file_server
+```
+
+```json
+// vercel.json
+{ "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }
+```
+
+On S3 and CloudFront, set both the default root object and the 404 (and 403)
+error response to `/index.html` with a 200 status. On GitHub Pages there is no
+rewrite at all, so copy `index.html` to `404.html` at deploy time.
+
+The way to check is to open `https://your-web-app.example/reset?token=whatever`
+directly, not by clicking through from `/`. In-app navigation never touches the
+host's router, so a broken rewrite looks perfect right up until the first email
+goes out.
+
+---
+
 ## Tests
 
 ```bash
 npm test
 ```
 
-625 tests across seventeen files. The adapter is tested against recorded response
+771 tests across twenty files. The adapter is tested against recorded response
 shapes rather than a live registrar: pointing load at a university to test our
 own code would be rude, and a suite that depends on their uptime is a suite that
 fails during their maintenance window.
@@ -751,10 +1192,12 @@ fails during their maintenance window.
 | `mime.test.ts` | Dot-stuffing, CRLF, encoded words and their UTF-8 boundaries, header injection, address validation, message assembly |
 | `email.test.ts` | Alert copy, the Resend transport's every status branch, key leakage, env configuration, delivery through the real queue |
 | `smtp.test.ts` | The full submission sequence against a scripted server: multiline replies, split and merged chunks, STARTTLS and the refusal to send without it, AUTH, 4xx versus 5xx, connect and handshake timeouts against real sockets, socket cleanup |
-| `api.test.ts` | Every route, validation, CORS, cache headers, the operator gate on `/api/poll` |
+| `api.test.ts` | Every route, validation, CORS, cache headers, the operator gate on `/api/poll`, and which address a rate limit is charged to behind a proxy |
 | `scoping.test.ts` | Level normalisation, level from adapter to row, search scoped by school, term and level, account defaults and explicit widening, and the watchlist staying unscoped across a transfer |
 | `auth.test.ts` | Hashing off the event loop, tokens, per-address and per-account limits, the absence of an enumeration oracle, expiry, revocation, and watch ownership between two accounts |
+| `recovery.test.ts` | Verification and reset end to end through a captured mailbox: single use, expiry, purpose scoping, a link that cannot act on another account, reset revoking every session, change keeping the caller signed in, the reset request route not leaking existence in status, body or timing, and a token appearing in no response body and no log line. Also that the reset request route writes its response before any work behind the address begins, that a reset failing mid-flight leaves the link spendable, and that one source draining an account's links leaves the account holder's own share intact |
 | `config.test.ts` | Validation including the politeness floor, and school registration seeding its poll targets |
+| `frontdoor.test.ts` | The claims a new reader meets first: the no em dash rule scanned over every text file including dotfiles, the root README's test count and gatech flag against what is actually committed, the SPA rewrite an emailed link lands on, and the resend copy telling the truth about a link that was not sent |
 
 ---
 
@@ -788,16 +1231,18 @@ Stated plainly so nobody is surprised:
   requires it of any sender above 5,000 messages a day, which an add/drop window
   will cross. The alert says how to stop it in the app instead. A header
   pointing at a URL that does nothing would be worse than none.
-- **No email verification and no password reset.** An address is taken on trust
-  at signup, and a forgotten password currently means a new account. Alerts only
-  ever go to the account's own address, so the old "point a watch at anyone"
-  hole is closed, but somebody can still sign up as an address they do not own
-  and mail themselves alerts at it. A confirmation step at signup is the fix and
-  it is not written.
-- **No way to revoke every session at once.** `Repo.revokeSessionsForUser`
-  exists and nothing calls it, because there is no password change and no reset
-  route to call it from. A user whose token leaks has to wait out the 30 day TTL
-  on every session but the one they can log out of.
+- **There is no way to change the address on an account.** Verification, reset
+  and the email channel are all built, but the address itself is whatever was
+  typed at signup. A student who typos it, or who graduates off a university
+  address, has to make a second account and re-create every watch. The token
+  layer is already ready for it (each token records the address it was mailed to
+  and refuses to act once that address has changed), so this is a route and a
+  confirmation step, not a redesign.
+- **Nothing reacts to a bounce.** A confirmed address can stop existing, and
+  when it does the alerts fail into `notifications.failed` where only an
+  operator looks. Resend reports bounces on a webhook we do not receive, and
+  the SMTP transport would need the relay's DSN, so today the student's own
+  address going dead looks the same to them as no seat ever opening.
 - **The SMTP client has never spoken to a production relay.** It has been run
   against a local sink over a real socket, and against scripted transcripts in
   the suite. It has not met a relay that enforces TLS, rate limits, or greylists,
@@ -819,3 +1264,19 @@ Stated plainly so nobody is surprised:
 - **A browse-seeded subject nobody watches leaves a poll target behind.** It is
   polled once and then never again, so it costs no requests, but the row stays
   and counts toward `targets` in `/api/stats`. Nothing prunes it.
+- **The Dockerfile has never been built.** It was written on a machine with no
+  Docker installed. What *is* verified is the part it depends on: `npm run
+  build` compiles the whole of `src/` under the same strict settings as
+  `npm run typecheck`, and the compiled `node dist/index.js --demo` starts,
+  migrates a database and answers `/health` with a 200. The image assembly
+  around that is unproven, so treat the first `docker build` as the test.
+- **`fly.toml` has never been deployed.** No Fly app exists, no account was
+  created, and the region, machine size and volume size in it are defaults
+  rather than measurements.
+- **Nothing backs the database up.** It is one file on one volume. Fly's volume
+  snapshots are the fallback and they are a platform feature, not something this
+  service arranges, checks, or restores from. There is no export command.
+- **There is no CI.** The tests and both typechecks are things somebody runs.
+  Nothing stops an image being built from a commit that fails them, other than
+  the image build itself running `tsc`, which catches type errors and no test
+  failures at all.

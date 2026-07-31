@@ -1,0 +1,18 @@
+{
+  // The container runs compiled JavaScript, not tsx. tsx is a devDependency,
+  // so shipping it would mean shipping the whole devDependency tree into the
+  // runtime image to run a program that has exactly one runtime dependency.
+  //
+  // This extends the strict config rather than restating it, so a build can
+  // never pass with looser rules than `npm run typecheck` enforces. The only
+  // differences are emit settings and dropping tests from the program.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts"]
+}

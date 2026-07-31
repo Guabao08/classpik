@@ -111,6 +111,29 @@ export interface UserRow {
   term: string | null
   /** JSON array of level codes. Read it through `preferencesOf`, never raw. */
   levels: string
+  /**
+   * When someone last proved they read mail at this address, by opening a link
+   * we sent to it. Null means the address is a claim and nothing more, which is
+   * what every address is at signup.
+   */
+  email_verified_at: number | null
+}
+
+/**
+ * A single-use secret that authorises one action, stored as its digest.
+ *
+ * The row is what a database leak yields, and it is worth nothing: `token_hash`
+ * cannot be reversed into the link that was mailed, so an attacker holding the
+ * whole table can see who asked for a reset and can perform none of them.
+ */
+export interface AuthTokenRow {
+  token_hash: string
+  user_id: string
+  purpose: string
+  email_norm: string
+  created_at: number
+  expires_at: number
+  consumed_at: number | null
 }
 
 /**
@@ -928,6 +951,172 @@ export class Repo {
     this.db.prepare('UPDATE users SET locked_until = ? WHERE id = ?').run(until, userId)
   }
 
+  // ------------------------------------------------------- account recovery
+
+  /**
+   * Record a single-use secret. Only its digest arrives here, and only its
+   * digest is ever stored: the caller keeps the one copy of the raw token long
+   * enough to put it in a link, and then it exists nowhere but that mailbox.
+   */
+  createAuthToken(input: {
+    userId: string
+    purpose: string
+    tokenHash: string
+    emailNorm: string
+    expiresAt: number
+  }): AuthTokenRow {
+    this.db
+      .prepare(
+        `INSERT INTO auth_tokens (token_hash, user_id, purpose, email_norm, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.tokenHash,
+        input.userId,
+        input.purpose,
+        input.emailNorm,
+        this.now(),
+        input.expiresAt
+      )
+    return this.getAuthToken(input.tokenHash)!
+  }
+
+  getAuthToken(tokenHash: string): AuthTokenRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM auth_tokens WHERE token_hash = ?')
+        .get(tokenHash) as unknown as AuthTokenRow) ?? null
+    )
+  }
+
+  /**
+   * Spend a token, or answer null. Every refusal is the same null: no such
+   * token, the wrong purpose, already spent, expired.
+   *
+   * One statement, and that is the whole of the single-use guarantee. SQLite
+   * runs an `UPDATE ... RETURNING` inside its own implicit transaction with the
+   * write lock held, so two requests arriving with the same token in the same
+   * millisecond are serialised and the second one's `consumed_at IS NULL` is
+   * already false. Exactly one gets a row back. A SELECT to check, then an
+   * UPDATE to mark, would let both read before either wrote, and a password
+   * reset that can be performed twice is one an attacker can replay out of a
+   * mail archive after the victim has already used it.
+   */
+  consumeAuthToken(tokenHash: string, purpose: string, at = this.now()): AuthTokenRow | null {
+    return (
+      (this.db
+        .prepare(
+          `UPDATE auth_tokens SET consumed_at = ?
+           WHERE token_hash = ? AND purpose = ? AND consumed_at IS NULL AND expires_at > ?
+           RETURNING *`
+        )
+        .get(at, tokenHash, purpose, at) as unknown as AuthTokenRow) ?? null
+    )
+  }
+
+  /**
+   * Burn every outstanding token of one purpose for one account.
+   *
+   * Called after a reset completes and after a deliberate password change,
+   * because any reset link still sitting in a mailbox is a live key to the
+   * account. The user who just took their account back must not leave one
+   * behind for whoever prompted them to.
+   */
+  revokeAuthTokens(userId: string, purpose: string, at = this.now()): number {
+    const info = this.db
+      .prepare(
+        `UPDATE auth_tokens SET consumed_at = ?
+         WHERE user_id = ? AND purpose = ? AND consumed_at IS NULL`
+      )
+      .run(at, userId, purpose)
+    return Number(info.changes)
+  }
+
+  /**
+   * How many tokens of one purpose this account has been issued since `since`.
+   *
+   * The throttle this feeds is per account rather than per caller, and it is
+   * about the mailbox, not about us: a stranger who knows an address should not
+   * be able to have us mail it two hundred reset links. It is checked silently,
+   * because refusing out loud on the public reset route would answer the one
+   * question that route exists not to answer.
+   */
+  countAuthTokensSince(userId: string, purpose: string, since: number): number {
+    const row = this.db
+      .prepare(
+        'SELECT COUNT(*) AS n FROM auth_tokens WHERE user_id = ? AND purpose = ? AND created_at >= ?'
+      )
+      .get(userId, purpose, since) as unknown as { n: number }
+    return Number(row.n)
+  }
+
+  /** Housekeeping, mirroring purgeExpiredSessions. A dead token is unusable either way. */
+  purgeExpiredAuthTokens(before = this.now()): number {
+    const info = this.db.prepare('DELETE FROM auth_tokens WHERE expires_at <= ?').run(before)
+    return Number(info.changes)
+  }
+
+  markEmailVerified(userId: string, at = this.now()): void {
+    this.db.prepare('UPDATE users SET email_verified_at = ? WHERE id = ?').run(at, userId)
+  }
+
+  /**
+   * Everything a completed password reset has to do, in one transaction.
+   *
+   * Each part is load-bearing and a partial application of them is worse than
+   * none:
+   *
+   *  - The new hash, obviously.
+   *  - Every session revoked. A reset is what somebody does after their account
+   *    was taken, and leaving the attacker's thirty-day bearer token alive means
+   *    the reset accomplished nothing they would notice.
+   *  - Every other outstanding reset token burned, so a second link from the
+   *    same panicked run of requests is not still a way in.
+   *  - The lockout cleared. A student who forgot their password has usually just
+   *    guessed at it five times, and a reset that leaves them locked out of the
+   *    account they have just proved they own is the same dead end again.
+   *  - The address marked verified, because consuming this token IS proof of the
+   *    mailbox. The link went to the account address and nowhere else, and
+   *    reading it is exactly what a verification link asks for. Requiring a
+   *    second round trip to establish a fact we have already established would
+   *    be ceremony.
+   */
+  completePasswordReset(userId: string, passwordHash: string, at = this.now()): void {
+    tx(this.db, () => {
+      this.db
+        .prepare(
+          `UPDATE users SET password_hash = ?, failed_logins = 0, locked_until = NULL,
+             email_verified_at = COALESCE(email_verified_at, ?)
+           WHERE id = ?`
+        )
+        .run(passwordHash, at, userId)
+      this.revokeSessionsForUser(userId, at)
+      this.revokeAuthTokens(userId, 'reset_password', at)
+    })
+  }
+
+  /**
+   * A deliberate password change by someone already signed in.
+   *
+   * Distinct from a reset in exactly one way, and it is the point of the route:
+   * the caller stays signed in and every other session dies. That is what makes
+   * a leaked bearer token recoverable in one request instead of waiting out a
+   * thirty day TTL on a session you cannot name. Outstanding reset links go too,
+   * for the same reason they do on a reset.
+   */
+  completePasswordChange(
+    userId: string,
+    passwordHash: string,
+    keepTokenHash: string,
+    at = this.now()
+  ): number {
+    return tx(this.db, () => {
+      this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, userId)
+      this.revokeAuthTokens(userId, 'reset_password', at)
+      return this.revokeSessionsForUser(userId, at, keepTokenHash)
+    })
+  }
+
   // --------------------------------------------------------------- sessions
 
   createSession(input: {
@@ -984,10 +1173,26 @@ export class Repo {
     return Number(info.changes) > 0
   }
 
-  revokeSessionsForUser(userId: string, at = this.now()): number {
-    const info = this.db
-      .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
-      .run(at, userId)
+  /**
+   * Kill every live session for an account, optionally sparing one.
+   *
+   * `keepTokenHash` is what separates a password change from a password reset.
+   * A change is somebody signed in tidying up after a leak, and signing them out
+   * of the browser they are typing in would be a confusing way to reward it. A
+   * reset is somebody who was locked out, so nothing is spared.
+   */
+  revokeSessionsForUser(userId: string, at = this.now(), keepTokenHash: string | null = null): number {
+    const info =
+      keepTokenHash === null
+        ? this.db
+            .prepare('UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL')
+            .run(at, userId)
+        : this.db
+            .prepare(
+              `UPDATE sessions SET revoked_at = ?
+               WHERE user_id = ? AND revoked_at IS NULL AND token_hash != ?`
+            )
+            .run(at, userId, keepTokenHash)
     return Number(info.changes)
   }
 

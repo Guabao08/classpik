@@ -253,6 +253,55 @@ const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [
       CREATE INDEX idx_sections_scope ON sections (school_id, term, level_norm);
     `,
   },
+  {
+    version: 5,
+    name: 'account recovery',
+    sql: `
+      -- When the address on this account was last proved, by someone opening a
+      -- link we mailed to it. NULL is the honest default and the honest state
+      -- for every account created before this migration: signup took the
+      -- address on trust, so nothing here has ever been proved.
+      --
+      -- Deliberately not a boolean. The timestamp says when, which is what an
+      -- operator needs when an address starts bouncing, and it makes
+      -- "verified" and "verified recently" the same column.
+      ALTER TABLE users ADD COLUMN email_verified_at INTEGER;
+
+      -- One table for both errands, because the mechanism is identical: a
+      -- single-use bearer secret with an expiry that authorises exactly one
+      -- action. What differs is only what consuming one buys.
+      --
+      -- The primary key is the SHA-256 of the token and never the token, for
+      -- the same reason sessions are stored that way: a database leak must
+      -- yield nothing replayable. Unlike a password there is nothing to slow
+      -- down here, since the token is 256 random bits and there is no guess to
+      -- make.
+      CREATE TABLE auth_tokens (
+        token_hash  TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        -- 'verify_email' or 'reset_password'. Part of the lookup, never read
+        -- off the row and trusted afterwards, so a verification link cannot be
+        -- presented to the reset route and change a password.
+        purpose     TEXT NOT NULL,
+        -- The normalised address the link was mailed to. A token is only ever
+        -- proof about the mailbox that received it, so if the account address
+        -- changes underneath, the outstanding token proves nothing about the
+        -- new one and is refused.
+        email_norm  TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        expires_at  INTEGER NOT NULL,
+        -- Set once, by the single UPDATE that consumes it. That is what makes
+        -- "single use" a property of the schema rather than of a caller
+        -- remembering to delete the row.
+        consumed_at INTEGER
+      );
+
+      -- Covers the resend throttle, which counts an account's recent tokens of
+      -- one purpose, and the revoke-the-rest sweep a completed reset performs.
+      CREATE INDEX idx_auth_tokens_user   ON auth_tokens (user_id, purpose, created_at);
+      CREATE INDEX idx_auth_tokens_expiry ON auth_tokens (expires_at);
+    `,
+  },
 ]
 
 export function openDb(path = ':memory:'): Db {

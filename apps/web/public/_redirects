@@ -1,0 +1,15 @@
+# Every path serves index.html, and the app routes on it in the browser.
+#
+# This is not a nicety. /verify and /reset are where emailed links land, and
+# /app is what a student bookmarks. None of them is a file in dist/, so a static
+# host that looks for one returns 404: the token was valid, the monitor was
+# healthy, and the student still could not get back into their account.
+#
+# Vite's dev server does this on its own because vite.config.ts sets
+# appType: 'spa', which is dev and preview only. Nothing about a built bundle
+# carries it, so it has to be told to the host.
+#
+# Netlify and Cloudflare Pages read this file, and Vite copies public/ into
+# dist/ verbatim. Other hosts need the equivalent one-liner; see
+# "Serving the web app" in apps/monitor/README.md.
+/*  /index.html  200

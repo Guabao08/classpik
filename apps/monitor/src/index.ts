@@ -11,6 +11,7 @@ import { Poller, Runner } from './core/poller.js'
 import { SubjectDiscovery } from './core/discovery.js'
 import { ConsoleTransport, Dispatcher, WebhookTransport, type Transport } from './core/notify.js'
 import { emailFromEnv } from './config/email.js'
+import { AccountMail } from './core/accountmail.js'
 import { createApi } from './api/server.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -98,6 +99,52 @@ export async function start(opts: StartOptions = {}) {
     })
   }
 
+  // Always constructed, with or without a provider behind it. Account recovery
+  // is not an optional feature: a service that cannot issue a reset link is one
+  // where a forgotten password means a new account. With no provider it prints
+  // the link instead of mailing it, which keeps signup and reset working on a
+  // development machine and is stated out loud below, because a link in a log is
+  // a link anyone reading the log can use.
+  const appUrl = (process.env.CLASSPIK_APP_URL ?? '').trim() || 'http://localhost:5173'
+  const accountMail = new AccountMail({
+    appUrl,
+    delivery: email ? { mailer: email.mailer, identity: email.identity } : null,
+    log,
+  })
+  if (!accountMail.enabled) {
+    log('verification and password reset links will be PRINTED HERE, not mailed', {
+      hint: 'treat this log as sensitive until CLASSPIK_EMAIL_PROVIDER is set',
+    })
+    // Louder when the app URL is not a laptop, because then the people opening
+    // those links are students who cannot read this log. A forgotten password
+    // with no reachable reset link is how somebody ends up with a second
+    // account and their watches stranded on the first.
+    if (!isLoopback(appUrl)) {
+      log('WARNING: no email provider, and this instance is not on localhost', {
+        appUrl,
+        consequence: 'students cannot verify an address or complete a password reset',
+        fix: 'set CLASSPIK_EMAIL_PROVIDER before letting anybody sign up',
+      })
+    }
+  }
+  log('account links point at the web app', { appUrl })
+
+  // Which address every per-source rate limit is charged to. Stated at startup
+  // because getting it wrong is invisible from the outside: behind a proxy with
+  // this unset, all five limiters share one bucket for the whole user base, and
+  // the symptom is students being throttled for somebody else's traffic.
+  const clientIpHeader = (process.env.CLASSPIK_CLIENT_IP_HEADER ?? '').trim() || null
+  if (clientIpHeader) {
+    log('rate limits key on a proxy header', {
+      header: clientIpHeader,
+      note: 'only correct if the proxy in front overwrites this header on every request',
+    })
+  } else {
+    log('rate limits key on the socket address', {
+      hint: 'behind a proxy set CLASSPIK_CLIENT_IP_HEADER, or every per-address limit becomes one global bucket',
+    })
+  }
+
   const dispatcher = new Dispatcher(repo, transports)
   const poller = new Poller(repo, adapters, dispatcher, { log })
   const discovery = new SubjectDiscovery(repo, adapters, { log })
@@ -124,8 +171,10 @@ export async function start(opts: StartOptions = {}) {
     poller,
     dispatcher,
     discovery,
+    accountMail,
     adminToken,
     allowPrivateWebhooks,
+    clientIpHeader,
     corsOrigins: opts.corsOrigins ?? corsFromEnv(),
   })
 
@@ -194,6 +243,21 @@ export function registerSchool(
     log('poll targets ready', { id: school.id, targets })
   }
   return targets
+}
+
+/**
+ * Whether the web app is somebody's own machine. Parsed rather than matched as
+ * a substring, so a real host called `localhost.example.com` is not mistaken for
+ * a laptop.
+ */
+function isLoopback(appUrl: string): boolean {
+  let host: string
+  try {
+    host = new URL(appUrl).hostname
+  } catch {
+    return false
+  }
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
 }
 
 function corsFromEnv(): string[] {

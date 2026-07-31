@@ -156,7 +156,62 @@ export function mintSessionToken(): string {
  * bits of entropy, so there is nothing to guess.
  */
 export function hashSessionToken(token: string): string {
-  return createHash('sha256').update(token, 'utf8').digest('hex')
+  return sha256Hex(token)
+}
+
+/**
+ * What consuming a recovery token buys. Two errands, one mechanism.
+ *
+ * The purpose is always part of the lookup rather than something read off a row
+ * and trusted afterwards. Otherwise the 24 hour verification link mailed to an
+ * address at signup would also be a password reset for that account, which is a
+ * strictly longer-lived and strictly more powerful secret than the one hour
+ * reset flow deliberately issues.
+ */
+export type TokenPurpose = 'verify_email' | 'reset_password'
+
+/**
+ * A day, because a verification mail lands in a phone at 2 AM and gets opened
+ * on a laptop the next evening, and an expired link there means a support
+ * request rather than a locked account.
+ */
+export const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * An hour, and deliberately far shorter than verification's day. This token is
+ * a live password: whoever holds it owns the account until it is consumed. The
+ * legitimate user reads their mail and clicks within minutes; the exposure a
+ * longer window buys is a forwarded mailbox, a shared machine, or a mail
+ * archive holding an account takeover for a day.
+ */
+export const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
+
+/**
+ * The same 256 random bits a session token carries, and opaque for the same
+ * reason. Base64url specifically, so it survives being pasted into a URL query
+ * string and back out of one without any encoding step in between deciding to
+ * mangle a `+` into a space.
+ */
+export function mintRecoveryToken(): string {
+  return randomBytes(32).toString('base64url')
+}
+
+/**
+ * Stored hashed, exactly like a session token. A recovery token in the clear in
+ * the database is a password reset for every account in it, so the row is worth
+ * nothing to whoever steals the file: they can see that a reset was requested,
+ * never perform one.
+ *
+ * Separate from `hashSessionToken` despite the identical body, because these are
+ * different secrets in different tables and collapsing them would make a future
+ * change to one silently a change to the other.
+ */
+export function hashRecoveryToken(token: string): string {
+  return sha256Hex(token)
+}
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
 }
 
 /** Extracts the token from an `Authorization` header, or null if absent. */

@@ -1,0 +1,101 @@
+# Fly.io deployment for the ClassPik monitor.
+#
+# Why Fly: this is one long-lived process that owns a file. It needs a host that
+# gives a container a real disk and then leaves it running, which rules out
+# every serverless platform. Fly gives a single machine a persistent volume and
+# keeps it up, and that is the whole requirement. Render, Railway, a Hetzner or
+# DigitalOcean box with docker compose, or Kubernetes with one replica and a
+# ReadWriteOnce PVC all work identically. What does not work is Vercel, Netlify,
+# Cloudflare Workers, or Lambda: a poll loop dies with the request that started
+# it, and there is nowhere for the SQLite file to live between invocations.
+#
+# ONE MACHINE. The database is a single file on one machine's disk, so this is
+# a single-instance deployment. See "Deployment" in README.md before scaling.
+#
+#   fly launch --no-deploy --copy-config
+#   fly volumes create classpik_data --region iad --size 1
+#   fly secrets set RESEND_API_KEY=... CLASSPIK_ADMIN_TOKEN=...
+#   fly deploy
+
+app = "classpik-monitor"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret configuration only. Anything that is a credential goes through
+# `fly secrets set`, which keeps it out of this file and out of the repo.
+[env]
+  PORT = "8787"
+  # Must sit inside the mount below. The default in the image is the same path;
+  # it is repeated here so that changing one and not the other is visible.
+  CLASSPIK_DB = "/data/classpik.db"
+  # Verification and reset links point here. Left at its default a deployed
+  # instance mails students a link to their own laptop, which is a support
+  # ticket per signup.
+  CLASSPIK_APP_URL = "https://classpik.example"
+  # The browser origin the web app is served from. The monitor rejects
+  # everything else, so a deployment that forgets this looks to a student like
+  # every request failing for no reason.
+  CLASSPIK_CORS_ORIGINS = "https://classpik.example"
+  # Which header carries the real client address. This matters here and not on a
+  # laptop: [http_service] below puts fly-proxy in front, so the monitor sees the
+  # proxy's address on every request. Leave this unset behind any proxy and every
+  # per-source rate limit becomes ONE GLOBAL BUCKET: twenty sign-in attempts a
+  # minute for the whole user base, ten reset links an hour for everybody
+  # together, which one bored client can hold at zero. Fly sets Fly-Client-IP and
+  # overwrites it, which is what makes trusting it safe. Behind nginx, Caddy or
+  # an ALB this is "X-Forwarded-For", and the monitor reads the LAST hop.
+  CLASSPIK_CLIENT_IP_HEADER = "Fly-Client-IP"
+
+# The persistent disk. Fly attaches this volume to the machine, and it survives
+# deploys, restarts and image rebuilds. Create it before the first deploy; a
+# machine with a mount and no volume does not start.
+[[mounts]]
+  source = "classpik_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+
+  # Both false, and this is the important line in the file. Fly's default is to
+  # stop a machine when HTTP traffic goes quiet. This service does its real work
+  # with no traffic at all: it polls registrars, diffs seat counts and delivers
+  # alerts on a timer. A machine suspended for being idle is a monitor that
+  # stops monitoring at exactly the hour a seat is most likely to open, and
+  # nothing would report an error, because from the outside it looks idle.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+
+  # One writer. Fly will not attach one volume to two machines, so this is
+  # also what stops a deploy from quietly producing a second empty database.
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 150
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+    # Covers schema migration and the first poll tick on a cold volume.
+    grace_period = "20s"
+
+# "immediate" because there is one machine and one volume. A strategy that runs
+# the old and new versions together (bluegreen, canary) either cannot attach the
+# volume to the second machine or attaches a second, empty one, and a monitor
+# serving an empty database looks exactly like a monitor that lost every watch.
+# The tradeoff is a few seconds of downtime per deploy, which for a service
+# whose poll floor is 60 seconds is not a tradeoff at all.
+[deploy]
+  strategy = "immediate"
+
+# 512MB is generous for one Node process holding a SQLite connection. Raise it
+# before raising the machine count: this design scales up, not out.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1
