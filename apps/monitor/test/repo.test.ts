@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
 import { migrate, openDb, tx } from '../src/core/db.js'
 import { sectionId, statusOf, targetId } from '../src/core/repo.js'
-import { setupEnv, SCHOOL_ID, TERM, type TestEnv } from './helpers.js'
+import { setupEnv, testSchool, SCHOOL_ID, TERM, type TestEnv } from './helpers.js'
 import type { RawSection } from '../src/adapters/types.js'
 
 const section = (over: Partial<RawSection> = {}): RawSection => ({
@@ -415,6 +415,69 @@ describe('Repo', () => {
 
     it('reports false when deactivating an unknown watch', () => {
       expect(env.repo.deactivateWatch('nope')).toBe(false)
+    })
+  })
+
+  describe('switching a school off', () => {
+    /**
+     * Seeding a target starts polling; nothing used to stop it. `enabled: false`
+     * only stopped a school being loaded, so the row already in the database
+     * kept its old flag and its targets were still claimed every tick. These
+     * cover the three ways a school goes quiet.
+     */
+    it('does not hand out work for a disabled school', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const sid = env.repo.upsertSection(target, section(), false)
+      env.repo.createWatch({ userId: 'roshan', sectionId: sid })
+      env.repo.recordPollSuccess(target.id, env.clock.now - 1, 60_000, false)
+
+      // Watched, due, active: claimable in every respect but the school.
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toHaveLength(1)
+
+      env.repo.upsertSchool({ ...env.school, enabled: false })
+      env.repo.releaseTargets([target.id], 'w1')
+
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toHaveLength(0)
+      expect(env.repo.dueTargets(10, env.clock.now)).toHaveLength(0)
+    })
+
+    it('does not bootstrap an unpolled target for a disabled school either', () => {
+      // The bootstrap path is separate and was the one that kept a leftover
+      // demo school retrying a hostname that does not resolve: it never polls
+      // successfully, so it is never not-unseeded.
+      env.repo.upsertSchool({ ...env.school, enabled: false })
+      env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+
+      expect(env.repo.unseededTargets(10, env.clock.now)).toHaveLength(0)
+      expect(env.repo.claimTargets('w1', 10, env.clock.now)).toHaveLength(0)
+    })
+
+    it('retires the schools it is not told to keep, and only those', () => {
+      env.repo.upsertSchool(testSchool({ id: 'gone-university', name: 'Gone' }))
+      env.repo.upsertSchool(testSchool({ id: 'kept-university', name: 'Kept' }))
+
+      const retired = env.repo.retireSchoolsExcept([SCHOOL_ID, 'kept-university'])
+
+      expect(retired).toEqual(['gone-university'])
+      expect(env.repo.getSchool('gone-university')).toMatchObject({ enabled: false })
+      expect(env.repo.getSchool('kept-university')).toMatchObject({ enabled: true })
+      expect(env.repo.getSchool(SCHOOL_ID)).toMatchObject({ enabled: true })
+    })
+
+    it('keeps the watches, because they belong to a student and not to us', () => {
+      const target = env.repo.ensureTarget(SCHOOL_ID, TERM, 'MATH', 60_000)
+      const sid = env.repo.upsertSection(target, section(), false)
+      env.repo.createWatch({ userId: 'roshan', sectionId: sid })
+
+      env.repo.retireSchoolsExcept([])
+
+      // Retiring disables, it does not delete: somebody who took a term off
+      // should not come back to an empty watchlist.
+      expect(env.repo.listWatches('roshan')).toHaveLength(1)
+    })
+
+    it('says nothing was retired when nothing was', () => {
+      expect(env.repo.retireSchoolsExcept([SCHOOL_ID])).toEqual([])
     })
   })
 

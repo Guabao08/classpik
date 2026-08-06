@@ -49,7 +49,7 @@ export default function SignInView({
 
   return (
     <AuthCard>
-      <h1 className="text-lg font-bold tracking-[-0.02em]">Sign in</h1>
+      <h1 className="display text-[1.6rem]">Sign in</h1>
       <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This is a ClassPik account, not your school login. We never ask for that.
       </p>

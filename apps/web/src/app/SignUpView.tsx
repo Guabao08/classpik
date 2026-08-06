@@ -82,7 +82,7 @@ function AccountStep({ onCreated }: { onCreated: (user: User) => void }) {
   return (
     <AuthCard>
       <StepMark step={1} />
-      <h1 className="text-lg font-bold tracking-[-0.02em]">Create an account</h1>
+      <h1 className="display text-[1.6rem]">Create an account</h1>
       <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This is a ClassPik account, not your school login. We never ask for that.
       </p>
@@ -181,7 +181,7 @@ function ScopeStep({ onUser, onDone }: { onUser: (user: User) => void; onDone: (
   return (
     <AuthCard wide>
       <StepMark step={2} />
-      <h1 className="text-lg font-bold tracking-[-0.02em]">Where are you shopping?</h1>
+      <h1 className="display text-[1.6rem]">Where are you shopping?</h1>
       <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This sets what Find classes shows you. Your watchlist is never filtered by it, and all of
         it is changeable later from the app.

@@ -43,7 +43,7 @@ export default function ScopeSwitcher({
 
   return (
     <div className="mt-6 border-t border-rule px-1 pt-5">
-      <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-soft">
+      <p className="label mb-2 px-1 text-ink-soft">
         Searching
       </p>
 

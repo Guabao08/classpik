@@ -31,7 +31,7 @@ export function AuthCard({ children, wide = false }: { children: React.ReactNode
 
 /** One set of field styles, so the two forms cannot drift a border apart. */
 export const authField = {
-  label: 'mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-soft',
+  label: 'label mb-1.5 block text-ink-soft',
   input:
     'w-full  border border-rule bg-ink/3 px-3.5 py-2.5 text-sm outline-none transition-colors placeholder:text-ink-soft focus:border-open/40',
   select:

@@ -21,7 +21,7 @@ export default function AlertsView({ events }: { events: EventItem[] }) {
   return (
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-7">
-        <h1 className="text-2xl font-bold tracking-[-0.02em]">Alerts</h1>
+        <h1 className="display text-[2rem]">Alerts</h1>
         <p className="mt-1.5 text-sm text-ink-soft">
           Every change on a section you watch, and what we did about it.
         </p>

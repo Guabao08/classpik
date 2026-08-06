@@ -71,7 +71,7 @@ export default function ForgotView() {
   if (sent !== null) {
     return (
       <AuthCard>
-        <h1 className="text-lg font-bold tracking-[-0.02em]">
+        <h1 className="display text-[1.6rem]">
           {mailEnabled === false ? 'This ClassPik cannot send email' : 'Check your email'}
         </h1>
         <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
@@ -100,7 +100,7 @@ export default function ForgotView() {
 
   return (
     <AuthCard>
-      <h1 className="text-lg font-bold tracking-[-0.02em]">Reset your password</h1>
+      <h1 className="display text-[1.6rem]">Reset your password</h1>
       <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         Your ClassPik password, not your school login. We never had that one.
       </p>

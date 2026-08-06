@@ -65,12 +65,30 @@ export async function start(opts: StartOptions = {}) {
     for (const subject of ['MATH', 'CS']) {
       repo.ensureTarget('demo-university', '202608', subject, 60_000)
     }
+    // Demo mode is a simulation, so nothing real may run alongside it. Without
+    // this, `--demo` against a database that has seen a real school keeps
+    // polling that school's registrar while claiming to contact nobody.
+    const stopped = repo.retireSchoolsExcept(['demo-university'])
+    if (stopped.length > 0) log('demo mode switched off the real schools', { schools: stopped })
     log('demo mode: simulated SIS, no real registrar is contacted')
   } else {
     const client = new PoliteClient()
     for (const [id, adapter] of buildAdapters(client)) adapters.set(id, adapter)
 
-    const schools = loadSchoolsFromDir(schoolsDir).filter((s) => s.enabled)
+    // Every school in the directory is written, disabled ones included. They
+    // used to be filtered out before the upsert, which meant `enabled: false`
+    // changed nothing: the row already in the database kept `enabled = 1` and
+    // its targets kept being polled. The off switch has to be written down to
+    // be an off switch.
+    const configured = loadSchoolsFromDir(schoolsDir)
+    for (const school of configured) repo.upsertSchool(school)
+
+    // Anything the directory no longer mentions is switched off too, which is
+    // what clears a leftover demo school out of a production database.
+    const stopped = repo.retireSchoolsExcept(configured.filter((s) => s.enabled).map((s) => s.id))
+    if (stopped.length > 0) log('switched off schools that are no longer enabled', { schools: stopped })
+
+    const schools = configured.filter((s) => s.enabled)
     if (schools.length === 0) {
       log('no enabled schools found', { schoolsDir, hint: 'set enabled: true in a schools/*.yaml, or run with --demo' })
     }

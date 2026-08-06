@@ -255,6 +255,44 @@ export class Repo {
       .run(cfg.id, cfg.name, cfg.sis, cfg.baseUrl, cfg.enabled ? 1 : 0, JSON.stringify(cfg), this.now())
   }
 
+  /**
+   * Switch off every school except the ones named, and say which were switched.
+   *
+   * The database outlives the config directory, so a school deleted from
+   * `schools/` is still sitting in it with `enabled = 1` and live poll targets.
+   * Nothing else ever removes it. That is not hypothetical: a single `--demo`
+   * run writes a "Demo University" pointing at a hostname that does not
+   * resolve, and every later production start inherited it, retried it four
+   * times a tick, and offered it to students in the school picker.
+   *
+   * Disabling rather than deleting, because the rows underneath it are a
+   * student's watches. Somebody who took a term off should not come back to an
+   * empty watchlist, and a school removed by accident should be one flag away
+   * from working again rather than gone.
+   */
+  retireSchoolsExcept(keep: string[]): string[] {
+    const rows = this.db
+      .prepare('SELECT id FROM schools WHERE enabled = 1')
+      .all() as Array<{ id: string }>
+    const retired = rows.map((r) => r.id).filter((id) => !keep.includes(id))
+    if (retired.length === 0) return []
+
+    // The column and the JSON both, because they are both read: the claim
+    // predicate uses the column, and `listSchools` hands the API whatever
+    // `config_json` says. Updating one leaves the API telling students a school
+    // is on while the poller treats it as off.
+    const placeholders = retired.map(() => '?').join(',')
+    this.db
+      .prepare(
+        `UPDATE schools
+            SET enabled = 0,
+                config_json = json_set(config_json, '$.enabled', json('false'))
+          WHERE id IN (${placeholders})`
+      )
+      .run(...retired)
+    return retired
+  }
+
   listSchools(): SchoolConfig[] {
     const rows = this.db.prepare('SELECT config_json FROM schools ORDER BY name').all() as Array<{
       config_json: string
@@ -421,7 +459,7 @@ export class Repo {
     return this.db
       .prepare(
         `SELECT t.* FROM poll_targets t
-         WHERE t.active = 1 AND t.next_poll_at <= ?
+         WHERE t.active = 1 AND ${Repo.SCHOOL_ENABLED} AND t.next_poll_at <= ?
            AND EXISTS (
              SELECT 1 FROM sections s
              JOIN watches w ON w.section_id = s.id AND w.active = 1
@@ -446,9 +484,10 @@ export class Repo {
   unseededTargets(limit = 25, at = this.now()): TargetRow[] {
     return this.db
       .prepare(
-        `SELECT * FROM poll_targets
-         WHERE active = 1 AND last_polled_at IS NULL AND next_poll_at <= ?
-         ORDER BY next_poll_at ASC LIMIT ?`
+        `SELECT t.* FROM poll_targets t
+         WHERE t.active = 1 AND ${Repo.SCHOOL_ENABLED}
+           AND t.last_polled_at IS NULL AND t.next_poll_at <= ?
+         ORDER BY t.next_poll_at ASC LIMIT ?`
       )
       .all(at, limit) as unknown as TargetRow[]
   }
@@ -504,6 +543,21 @@ export class Repo {
    * actually produced sections is claimable only while somebody is watching
    * something in it.
    */
+  /**
+   * "The school this target belongs to is still switched on."
+   *
+   * Every path that takes work has to carry this, and it used to carry none of
+   * them. Seeding a target is what starts polling, but nothing ever stopped it:
+   * `enabled: false` in a school's YAML only stops it being loaded, so the row
+   * already in the database kept its old flag and its targets kept being
+   * claimed. The documented off switch did not turn anything off. The same hole
+   * let a school that had been deleted from the config directory poll forever,
+   * which is how a `--demo` run left "Demo University" hammering a hostname
+   * that does not resolve in a production process.
+   */
+  private static readonly SCHOOL_ENABLED = `
+    EXISTS (SELECT 1 FROM schools sc WHERE sc.id = t.school_id AND sc.enabled = 1)`
+
   claimTargets(workerId: string, limit: number, at = this.now(), leaseMs = 120_000): TargetRow[] {
     if (limit <= 0) return []
     return this.db
@@ -512,6 +566,7 @@ export class Repo {
          WHERE id IN (
            SELECT t.id FROM poll_targets t
            WHERE t.active = 1
+             AND ${Repo.SCHOOL_ENABLED}
              AND t.next_poll_at <= ?
              AND (t.lease_owner IS NULL OR t.lease_expires_at IS NULL OR t.lease_expires_at <= ?)
              AND (

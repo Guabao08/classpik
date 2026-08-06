@@ -45,7 +45,7 @@ export default function WatchlistView({
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-7 flex flex-col items-start justify-between gap-4 sm:flex-row sm:gap-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-[-0.02em]">Watchlist</h1>
+          <h1 className="display text-[2rem]">Watchlist</h1>
           <p className="mt-1.5 text-sm text-ink-soft">
             {watches.length} section{watches.length === 1 ? '' : 's'} watched, {autoCount} set to
             auto-claim.
@@ -79,7 +79,7 @@ export default function WatchlistView({
           {/* Hidden below the breakpoint, where each row becomes a labelled
               card. Six columns in a phone's width is unreadable, and a phone is
               where a seat alert is read. */}
-          <div className={`hidden border-b border-rule px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-ink-soft ${COLUMNS}`}>
+          <div className={`label hidden border-b border-ink px-5 py-3 text-ink-soft ${COLUMNS}`}>
             <span>Course</span>
             <span>Seats</span>
             <span>Status</span>

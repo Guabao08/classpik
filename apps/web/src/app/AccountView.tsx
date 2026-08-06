@@ -34,7 +34,7 @@ export default function AccountView({
   return (
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-7">
-        <h1 className="text-2xl font-bold tracking-[-0.02em]">Account</h1>
+        <h1 className="display text-[2rem]">Account</h1>
         <p className="mt-1.5 text-sm text-ink-soft">
           A ClassPik account, and only that. We have never had your school login.
         </p>

@@ -56,14 +56,14 @@ export default function VerifyView({ token }: { token: string | null }) {
     <AuthCard>
       {state === 'working' && (
         <>
-          <h1 className="text-lg font-bold tracking-[-0.02em]">Confirming…</h1>
+          <h1 className="display text-[1.6rem]">Confirming…</h1>
           <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">One moment.</p>
         </>
       )}
 
       {state === 'done' && (
         <>
-          <h1 className="text-lg font-bold tracking-[-0.02em]">Address confirmed</h1>
+          <h1 className="display text-[1.6rem]">Address confirmed</h1>
           <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
             ClassPik can now email <span className="num">{message}</span> when a seat opens.
           </p>
@@ -78,7 +78,7 @@ export default function VerifyView({ token }: { token: string | null }) {
 
       {state === 'failed' && (
         <>
-          <h1 className="text-lg font-bold tracking-[-0.02em]">That link did not work</h1>
+          <h1 className="display text-[1.6rem]">That link did not work</h1>
           <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">{message}</p>
           <p className="mt-4 text-xs leading-relaxed text-ink-soft">
             Links last a day and work once. Sign in and ask for a new one from your watchlist.

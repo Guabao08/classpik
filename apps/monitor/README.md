@@ -11,7 +11,7 @@ design decision, and it is enforced at the type level: there is nowhere in
 
 ```bash
 npm install
-npm test          # 786 tests
+npm test          # 793 tests
 npm run typecheck
 npm run serve -- --demo   # runs against a simulated SIS, no real registrar
 ```
@@ -1172,7 +1172,7 @@ goes out.
 npm test
 ```
 
-786 tests across twenty-one files. The adapter is tested against recorded response
+793 tests across twenty-one files. The adapter is tested against recorded response
 shapes rather than a live registrar: pointing load at a university to test our
 own code would be rude, and a suite that depends on their uptime is a suite that
 fails during their maintenance window.

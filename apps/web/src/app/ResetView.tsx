@@ -42,7 +42,7 @@ export default function ResetView({ token }: { token: string }) {
   if (done) {
     return (
       <AuthCard>
-        <h1 className="text-lg font-bold tracking-[-0.02em]">Password changed</h1>
+        <h1 className="display text-[1.6rem]">Password changed</h1>
         <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
           Every device that was signed in has been signed out, including any you did not know
           about. Your watches are untouched and still running.
@@ -61,7 +61,7 @@ export default function ResetView({ token }: { token: string }) {
 
   return (
     <AuthCard>
-      <h1 className="text-lg font-bold tracking-[-0.02em]">Choose a new password</h1>
+      <h1 className="display text-[1.6rem]">Choose a new password</h1>
       <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This signs out every device currently using the old one.
       </p>

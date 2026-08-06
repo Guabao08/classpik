@@ -89,7 +89,7 @@ export default function SearchView({
   return (
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-5">
-        <h1 className="text-2xl font-bold tracking-[-0.02em]">Find classes</h1>
+        <h1 className="display text-[2rem]">Find classes</h1>
         <p className="mt-1.5 text-sm text-ink-soft">
           Seat counts from your school’s public schedule. Your school login is never involved.
         </p>
@@ -141,7 +141,7 @@ export default function SearchView({
         {/* Hidden on narrow screens, where each row becomes a labelled card
             instead. A five column table in 154px of a phone is unreadable, and
             a phone is where a seat alert is read. */}
-        <div className={`hidden border-b border-rule px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-ink-soft ${COLUMNS}`}>
+        <div className={`label hidden border-b border-ink px-5 py-3 text-ink-soft ${COLUMNS}`}>
           <span>Course</span>
           <span>Meets</span>
           <span>Seats</span>
