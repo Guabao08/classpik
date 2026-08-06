@@ -91,7 +91,11 @@ interface Session {
 export class BannerAdapter implements SisAdapter {
   readonly id = 'banner9' as const
 
+  /** Host to the term its session is currently authorised for. One per host. */
   private readonly sessions = new Map<string, Session>()
+
+  /** Host to a promise chain that serialises operations against it. */
+  private readonly hostLocks = new Map<string, Promise<void>>()
 
   constructor(
     private readonly client: PoliteClient,
@@ -122,11 +126,12 @@ export class BannerAdapter implements SisAdapter {
     term: string,
     opts: FetchOptions = {}
   ): Promise<Subject[]> {
-    await this.ensureSession(school, term, opts)
     const url = `${this.base(school)}/classSearch/get_subject?searchTerm=&term=${encodeURIComponent(
       term
     )}&offset=1&max=500`
-    const dto = await this.client.json<BannerTermDto[]>(url, { signal: opts.signal })
+    const dto = await this.withSession(school, term, opts, () =>
+      this.client.json<BannerTermDto[]>(url, { signal: opts.signal })
+    )
     if (!Array.isArray(dto)) throw new SisError('get_subject did not return an array', null, true)
     // Banner escapes subject names: Georgia Tech sends `Chemical &amp;
     // Biomolecular Engr`, and storing that raw breaks both search and display.
@@ -139,8 +144,21 @@ export class BannerAdapter implements SisAdapter {
     subject: string,
     opts: FetchOptions = {}
   ): Promise<RawSection[]> {
-    await this.ensureSession(school, term, opts)
+    // The whole paged read runs under the session lock. Paging is stateful too:
+    // a term re-authorised between page one and page two would silently
+    // truncate the result, and a short read looks exactly like sections
+    // disappearing.
+    return this.withSession(school, term, opts, () =>
+      this.readAllPages(school, term, subject, opts)
+    )
+  }
 
+  private async readAllPages(
+    school: SchoolConfig,
+    term: string,
+    subject: string,
+    opts: FetchOptions
+  ): Promise<RawSection[]> {
     const out: RawSection[] = []
     let offset = 0
 
@@ -171,7 +189,7 @@ export class BannerAdapter implements SisAdapter {
       // a legitimately empty subject, and silently accepting the former means
       // we would report every section as vanished.
       if (offset === 0 && rows.length === 0 && body.totalCount === 0) {
-        this.sessions.delete(this.key(school, term))
+        this.sessions.delete(this.host(school))
         throw new SisError(
           `no rows for ${subject} in ${term}; session likely not authorised for this term`,
           null,
@@ -191,8 +209,63 @@ export class BannerAdapter implements SisAdapter {
     return out
   }
 
-  private key(school: SchoolConfig, term: string): string {
-    return `${school.id}:${term}`
+  /**
+   * The cookie scope, which is also the scope of Banner's term authorisation.
+   *
+   * Not the school id: two configs pointing at one host share a cookie jar and
+   * therefore share a session, and the session is the thing being tracked.
+   */
+  private host(school: SchoolConfig): string {
+    try {
+      return new URL(school.baseUrl).host
+    } catch {
+      return school.baseUrl
+    }
+  }
+
+  /**
+   * Run an operation with the session authorised for `term`, and with no other
+   * operation allowed to re-authorise the host underneath it.
+   *
+   * Banner holds the authorised term as server-side session state, one per
+   * cookie, so authorising a term is a side effect on every other in-flight
+   * operation against that host. Discovering subjects for one term while
+   * polling sections for another is enough to break the poll: the search comes
+   * back with zero rows and a 200, which is indistinguishable from a subject
+   * that genuinely has no classes. Observed live at Georgia Tech, where the
+   * MATH poll failed every time subject discovery walked the other terms.
+   *
+   * So the handshake and the requests that depend on it are one critical
+   * section. This costs nothing in throughput: the client already holds a
+   * minimum gap between requests to a host, so these were never running in
+   * parallel, only interleaving.
+   */
+  private async withSession<T>(
+    school: SchoolConfig,
+    term: string,
+    opts: FetchOptions,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const host = this.host(school)
+    const previous = this.hostLocks.get(host) ?? Promise.resolve()
+
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    // `held` only ever resolves, so a failed operation cannot poison the queue.
+    const chained = previous.then(() => held)
+    this.hostLocks.set(host, chained)
+
+    await previous
+    try {
+      await this.ensureSession(school, term, opts)
+      return await fn()
+    } finally {
+      release()
+      // Nobody queued behind us, so stop tracking this host.
+      if (this.hostLocks.get(host) === chained) this.hostLocks.delete(host)
+    }
   }
 
   /**
@@ -205,9 +278,17 @@ export class BannerAdapter implements SisAdapter {
     term: string,
     opts: FetchOptions
   ): Promise<void> {
-    const key = this.key(school, term)
+    const key = this.host(school)
     const existing = this.sessions.get(key)
-    if (existing && this.now() - existing.createdAt < SESSION_TTL_MS) return
+    // The term has to match. A cached session authorised for another term is
+    // worse than no session, because it answers searches with an empty 200.
+    if (
+      existing &&
+      existing.term === term &&
+      this.now() - existing.createdAt < SESSION_TTL_MS
+    ) {
+      return
+    }
 
     const base = this.base(school)
 
@@ -250,8 +331,9 @@ export class BannerAdapter implements SisAdapter {
   }
 
   /** Exposed for tests and for the agent, which re-authorises after a session drop. */
-  invalidateSession(school: SchoolConfig, term: string): void {
-    this.sessions.delete(this.key(school, term))
+  invalidateSession(school: SchoolConfig, _term?: string): void {
+    // Host-scoped, because the session is: there is only one to drop.
+    this.sessions.delete(this.host(school))
   }
 }
 

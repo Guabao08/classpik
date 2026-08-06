@@ -2,8 +2,9 @@
  * The ClassPik mark: a chair in profile, drawn on a 24x24 grid and legible at
  * 16px, so no thin strokes and no detail smaller than 1.5 units.
  *
- * `DIM` is the muted structural color, `ACCENT` is the one lime highlight. One
- * accent element only, so the eye lands in one place.
+ * `DIM` is the muted structural color, `ACCENT` is the seat itself, in the one
+ * green the product uses. One accent element only, so the eye lands in one
+ * place, and it lands on the seat.
  *
  * Five other candidates and the gallery that compared them lived here. The mark
  * was chosen, so they are gone: a lab that outlives its decision is a second
@@ -16,7 +17,7 @@ interface MarkProps {
 }
 
 const DIM = 'currentColor'
-const ACCENT = 'var(--color-open, #c8ff4d)'
+const ACCENT = 'var(--color-open, #1a6b3c)'
 
 export function MarkSeat({ size = 24, className }: MarkProps) {
   return (

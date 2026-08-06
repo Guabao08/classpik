@@ -39,11 +39,11 @@ export default function ScopeSwitcher({
   }
 
   const control =
-    'w-full appearance-none truncate rounded-lg border border-line bg-ink-2 px-2.5 py-1.5 text-xs text-bright outline-none transition-colors hover:border-white/25 disabled:opacity-50'
+    'w-full appearance-none truncate  border border-rule bg-paper-2 px-2.5 py-1.5 text-xs text-ink outline-none transition-colors hover:border-ink/25 disabled:opacity-50'
 
   return (
-    <div className="mt-6 border-t border-line px-1 pt-5">
-      <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
+    <div className="mt-6 border-t border-rule px-1 pt-5">
+      <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-soft">
         Searching
       </p>
 
@@ -88,7 +88,7 @@ export default function ScopeSwitcher({
       {/* The levels are ticked in Find classes, but they narrow the same search,
           so the sidebar says what they currently are rather than leaving a
           filter running out of sight. */}
-      <p className="mt-2 px-1 text-[11px] leading-relaxed text-muted">
+      <p className="mt-2 px-1 text-[11px] leading-relaxed text-ink-soft">
         {user.levels.length === 0 ? 'Every level' : user.levels.join(', ')}
       </p>
 

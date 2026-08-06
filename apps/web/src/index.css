@@ -1,21 +1,39 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 @import 'tailwindcss';
 
+/*
+ * ClassPik looks like a course catalog someone bothered to set properly.
+ *
+ * The product is a table of sections, seat counts and times. That is what a
+ * registrar's catalog has always been, so the design leans into it rather than
+ * hiding it behind cards: paper, ink, hairline rules, tabular figures, one
+ * colour that means something. There is no gradient, no glass, no glow and no
+ * WebGL anywhere in here, because a student deciding whether to trust a seat
+ * alert is reading numbers, and none of that helps them read numbers.
+ *
+ * The single accent is semantic. Green is not a brand colour, it means a seat
+ * is open, and it is the only green on the page for exactly that reason.
+ */
+
 @theme {
-  --color-ink: #0b0d10;
-  --color-ink-2: #101317;
-  --color-line: rgba(255, 255, 255, 0.08);
-  --color-muted: #8b929c;
-  --color-bright: #f2f4f7;
+  /* Paper. Warm rather than white, so a page of dense type is not a lightbox. */
+  --color-paper: #f6f3ec;
+  --color-paper-2: #efeade;
+  --color-paper-3: #e6e0d1;
 
-  /* Semantic: seats. Green means go, and it means a seat is open. */
-  --color-open: #c8ff4d;
-  --color-open-dim: #8fbf28;
-  --color-full: #ff6b6b;
-  --color-wait: #ffb443;
+  --color-ink: #17150f;
+  --color-ink-soft: #5f5a4c;
+  --color-rule: #17150f26;
+  --color-rule-strong: #17150f4d;
 
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Seat state. Print-weight, not neon: these sit on paper and get read. */
+  --color-open: #1a6b3c;
+  --color-full: #a32e1c;
+  --color-wait: #8a5a06;
+
+  --font-display: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
 html {
@@ -23,33 +41,105 @@ html {
 }
 
 body {
-  background: var(--color-ink);
-  color: var(--color-bright);
+  background: var(--color-paper);
+  color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
 
-/* Numbers are the whole point of this product, so give them their own voice. */
+/*
+ * Headlines are set in a serif at a large size and a tight measure. This is the
+ * one place the page raises its voice, and it does it with type rather than
+ * with a gradient.
+ */
+.display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1.02;
+}
+
+/*
+ * Every number in this product is a quantity a student compares against another
+ * quantity, so they all get tabular figures and they all line up in a column.
+ */
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
+  font-feature-settings: 'zero' 1;
+  letter-spacing: -0.01em;
 }
 
+/*
+ * Catalog running heads: the small type that names a column or a section.
+ *
+ * Deliberately sets no colour. This file is imported after Tailwind, so a
+ * colour here would outrank every `text-*` utility put on the same element and
+ * `.label text-open` would come out grey. Colour is the caller's to state.
+ */
+.label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/*
+ * Rules, not shadows. A hairline is how a printed table separates rows, it
+ * costs one pixel, and it does not imply that a course listing is floating
+ * three millimetres above the page.
+ */
+.rule-t { border-top: 1px solid var(--color-rule); }
+.rule-b { border-bottom: 1px solid var(--color-rule); }
+
+/*
+ * A boxed block, the way a catalog page frames a term's listings. Both names
+ * exist because both readings are true and both are used: `.catalog` where the
+ * contents are a table of sections, `.panel` where they are a form or a card.
+ * Neither has a shadow. A raised surface would be claiming the page has depth
+ * it does not have, and printed catalogs manage fine with a box rule.
+ */
+.catalog,
 .panel {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
-  border: 1px solid var(--color-line);
-  border-radius: 16px;
+  border: 1px solid var(--color-rule-strong);
+  background: var(--color-paper);
 }
 
-@keyframes pulse-open {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 255, 77, 0.5); }
-  50%      { box-shadow: 0 0 0 5px rgba(200, 255, 77, 0); }
+.catalog-row + .catalog-row {
+  border-top: 1px solid var(--color-rule);
 }
 
-.dot-open {
-  animation: pulse-open 2s ease-in-out infinite;
+/*
+ * The only animation in the product, and it fires on the only event that
+ * matters: a seat opening. A departure board flips when the world changes,
+ * which is the same idea and the same reason.
+ */
+@keyframes flip-in {
+  from { transform: rotateX(-88deg); opacity: 0; }
+  to   { transform: rotateX(0deg); opacity: 1; }
+}
+
+.flip {
+  animation: flip-in 380ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  transform-origin: center top;
+  backface-visibility: hidden;
+}
+
+/*
+ * Focus has to survive a design that removes decoration. Keyboard users get a
+ * visible ring everywhere, since half the point of the product is that you can
+ * use it fast.
+ */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--color-ink);
+  color: var(--color-paper);
 }
 
 @media (prefers-reduced-motion: reduce) {

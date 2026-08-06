@@ -35,7 +35,7 @@ export default function AccountView({
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-7">
         <h1 className="text-2xl font-bold tracking-[-0.02em]">Account</h1>
-        <p className="mt-1.5 text-sm text-muted">
+        <p className="mt-1.5 text-sm text-ink-soft">
           A ClassPik account, and only that. We have never had your school login.
         </p>
       </header>
@@ -76,13 +76,13 @@ function EmailPanel({
       </div>
 
       {user.emailVerified ? (
-        <p className="mt-3 text-xs leading-relaxed text-muted">
+        <p className="mt-3 text-xs leading-relaxed text-ink-soft">
           Seat alerts can reach this address. ClassPik only ever sends to the address on the
           account, so there is nowhere else for a watch to point.
         </p>
       ) : (
         <>
-          <p className="mt-3 text-xs leading-relaxed text-muted">
+          <p className="mt-3 text-xs leading-relaxed text-ink-soft">
             {state === 'sent'
               ? detail || 'Sent. Open the link in that inbox; it lasts a day.'
               : state === 'throttled' || state === 'failed'
@@ -97,7 +97,7 @@ function EmailPanel({
             <button
               onClick={() => void resend()}
               disabled={state === 'sending'}
-              className="mt-3 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition-colors hover:border-white/25 disabled:opacity-50"
+              className="mt-3  border border-rule px-3 py-1.5 text-xs font-semibold transition-colors hover:border-ink/25 disabled:opacity-50"
             >
               {state === 'sending' ? 'Sending…' : 'Send the link again'}
             </button>
@@ -150,7 +150,7 @@ function PasswordPanel() {
   return (
     <section className="panel p-5">
       <h2 className="text-sm font-semibold">Change password</h2>
-      <p className="mt-1.5 text-xs leading-relaxed text-muted">
+      <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">
         This browser stays signed in. Every other session is cut off, which is how a password
         somebody else has seen stops being their way in without waiting a month for the token to
         expire.
@@ -182,15 +182,15 @@ function PasswordPanel() {
         </label>
 
         {error && (
-          <p className="rounded-xl border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
+          <p className=" border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
             {error}
           </p>
         )}
 
         {revoked !== null && (
-          <p className="rounded-xl border border-open/25 bg-open/8 px-3.5 py-2.5 text-sm leading-relaxed">
+          <p className=" border border-open/25 bg-open/8 px-3.5 py-2.5 text-sm leading-relaxed">
             Password changed.{' '}
-            <span className="text-muted">
+            <span className="text-ink-soft">
               {revoked === 0 ? (
                 'No other device was signed in.'
               ) : (
@@ -212,7 +212,7 @@ function PasswordPanel() {
           the state this whole panel is unusable in. */}
       <a
         href="/forgot"
-        className="mt-3.5 block text-xs text-muted transition-colors hover:text-bright"
+        className="mt-3.5 block text-xs text-ink-soft transition-colors hover:text-ink"
       >
         Do not remember the current one? Email yourself a reset link
       </a>

@@ -74,14 +74,14 @@ export default function ForgotView() {
         <h1 className="text-lg font-bold tracking-[-0.02em]">
           {mailEnabled === false ? 'This ClassPik cannot send email' : 'Check your email'}
         </h1>
-        <p className="mt-1.5 text-sm leading-relaxed text-muted">
+        <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
           {mailEnabled === false
             ? 'No mail provider is configured here, so no reset link was sent to any address. ' +
               'The monitor prints those links to its own log instead. Ask whoever runs this ' +
               'instance for it.'
             : sent}
         </p>
-        <p className="mt-4 text-xs leading-relaxed text-muted">
+        <p className="mt-4 text-xs leading-relaxed text-ink-soft">
           {mailEnabled === false
             ? 'Nothing about your account has changed, so your current password still works. ' +
               'Sending is the only part that is missing here.'
@@ -90,7 +90,7 @@ export default function ForgotView() {
         </p>
         <a
           href="/login"
-          className="mt-5 block rounded-xl border border-line px-4 py-2.5 text-center text-sm font-semibold transition-colors hover:border-white/25"
+          className="mt-5 block  border border-rule px-4 py-2.5 text-center text-sm font-semibold transition-colors hover:border-ink/25"
         >
           Back to sign in
         </a>
@@ -101,7 +101,7 @@ export default function ForgotView() {
   return (
     <AuthCard>
       <h1 className="text-lg font-bold tracking-[-0.02em]">Reset your password</h1>
-      <p className="mt-1.5 text-sm leading-relaxed text-muted">
+      <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         Your ClassPik password, not your school login. We never had that one.
       </p>
 
@@ -120,7 +120,7 @@ export default function ForgotView() {
         </label>
 
         {error && (
-          <p className="rounded-xl border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
+          <p className=" border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
             {error}
           </p>
         )}
@@ -135,14 +135,14 @@ export default function ForgotView() {
           somewhere the student will never look at again. */}
       <a
         href="/login"
-        className="mt-4 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-4 block text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         Remembered it? Sign in
       </a>
 
       <a
         href="/signup"
-        className="mt-2 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-2 block text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         No account yet? Create one
       </a>

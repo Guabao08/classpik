@@ -90,14 +90,14 @@ export default function SearchView({
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-5">
         <h1 className="text-2xl font-bold tracking-[-0.02em]">Find classes</h1>
-        <p className="mt-1.5 text-sm text-muted">
+        <p className="mt-1.5 text-sm text-ink-soft">
           Seat counts from your school’s public schedule. Your school login is never involved.
         </p>
       </header>
 
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <label className="flex w-full min-w-0 items-center gap-2.5 rounded-xl border border-line bg-white/3 px-3.5 py-2.5 transition-colors focus-within:border-open/40 sm:w-auto sm:min-w-[300px] sm:flex-1">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="shrink-0 text-muted">
+        <label className="flex w-full min-w-0 items-center gap-2.5  border border-rule bg-ink/3 px-3.5 py-2.5 transition-colors focus-within:border-open/40 sm:w-auto sm:min-w-[300px] sm:flex-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="shrink-0 text-ink-soft">
             <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" strokeWidth="1.8" />
             <path d="m15.5 15.5 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           </svg>
@@ -107,17 +107,17 @@ export default function SearchView({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Course code, title, CRN, or instructor"
             aria-label="Search the course catalog"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-muted/70"
+            className="w-full bg-transparent text-sm outline-none placeholder:text-ink-soft/70"
           />
         </label>
 
-        <div className="flex flex-wrap gap-1.5 rounded-xl border border-line bg-white/3 p-1">
+        <div className="flex flex-wrap gap-1.5  border border-rule bg-ink/3 p-1">
           {FILTERS.map((f) => (
             <button
               key={f.id}
               onClick={() => setStatus(f.id)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                status === f.id ? 'bg-white/10 text-bright' : 'text-muted hover:text-bright'
+              className={` px-3 py-1.5 text-xs font-medium transition-colors ${
+                status === f.id ? 'bg-ink/10 text-ink' : 'text-ink-soft hover:text-ink'
               }`}
             >
               {f.label}
@@ -131,7 +131,7 @@ export default function SearchView({
       <SubjectBrowser user={user} />
 
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <span className="num text-xs text-muted">
+        <span className="num text-xs text-ink-soft">
           {loading ? 'searching…' : `${sections.length} section${sections.length === 1 ? '' : 's'}`}
         </span>
         <ScopeLine scope={scope} schools={schools} />
@@ -141,7 +141,7 @@ export default function SearchView({
         {/* Hidden on narrow screens, where each row becomes a labelled card
             instead. A five column table in 154px of a phone is unreadable, and
             a phone is where a seat alert is read. */}
-        <div className={`hidden border-b border-line px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted ${COLUMNS}`}>
+        <div className={`hidden border-b border-rule px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-ink-soft ${COLUMNS}`}>
           <span>Course</span>
           <span>Meets</span>
           <span>Seats</span>
@@ -167,16 +167,16 @@ export default function SearchView({
             return (
               <div
                 key={s.id}
-                className={`flex flex-col gap-2 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2 md:items-center ${COLUMNS}`}
+                className={`flex flex-col gap-2 border-b border-rule px-5 py-3.5 transition-colors last:border-0 hover:bg-ink/2 md:items-center ${COLUMNS}`}
               >
                 <div className="min-w-0">
                   <div className="flex items-baseline gap-2">
                     <span className="text-sm font-semibold">
-                      {s.code} <span className="text-muted">· {s.section}</span>
+                      {s.code} <span className="text-ink-soft">· {s.section}</span>
                     </span>
-                    <span className="num text-[11px] text-muted">{s.crn}</span>
+                    <span className="num text-[11px] text-ink-soft">{s.crn}</span>
                   </div>
-                  <div className="mt-0.5 truncate text-xs text-muted">
+                  <div className="mt-0.5 truncate text-xs text-ink-soft">
                     {s.title}
                     {s.instructor ? ` · ${s.instructor}` : ''}
                     {/* The registrar's own code, never a word we invented for it. */}
@@ -184,7 +184,7 @@ export default function SearchView({
                   </div>
                 </div>
 
-                <div className="num text-xs text-muted">
+                <div className="num text-xs text-ink-soft">
                   <span className="md:hidden">Meets: </span>
                   {s.meetingDays ? `${s.meetingDays} ${s.meetingTime ?? ''}`.trim() : 'TBA'}
                 </div>
@@ -208,7 +208,7 @@ export default function SearchView({
                   className={`w-full rounded-full px-3.5 py-1.5 text-xs font-semibold transition disabled:opacity-50 md:w-auto ${
                     isWatched
                       ? 'border border-open/30 bg-open/12 text-open'
-                      : 'border border-line text-muted hover:border-white/25 hover:text-bright'
+                      : 'border border-rule text-ink-soft hover:border-ink/25 hover:text-ink'
                   }`}
                 >
                   {pending === s.id ? '…' : isWatched ? 'Watching' : 'Watch'}
@@ -246,10 +246,10 @@ function termName(schools: School[], schoolId: string | null, code: string | nul
 function ScopeLine({ scope, schools }: { scope: SearchScope | null; schools: School[] }) {
   if (scope === null) return null
   const parts = describeScope(scope, schools)
-  if (parts.length === 0) return <span className="text-xs text-muted">Showing every school</span>
+  if (parts.length === 0) return <span className="text-xs text-ink-soft">Showing every school</span>
   return (
-    <span className="text-xs text-muted">
-      Showing <span className="text-bright">{parts.join(' · ')}</span>
+    <span className="text-xs text-ink-soft">
+      Showing <span className="text-ink">{parts.join(' · ')}</span>
     </span>
   )
 }
@@ -294,17 +294,17 @@ function EmptyState({
       </p>
 
       {narrowed && (
-        <p className="mt-1.5 text-xs text-muted">
+        <p className="mt-1.5 text-xs text-ink-soft">
           This search covers {describeScope(scope!, schools).join(' · ')} only. Change the school or
           term in the sidebar to look somewhere else.
         </p>
       )}
 
       {levels.length > 0 && (
-        <p className="mt-3 text-xs text-muted">
+        <p className="mt-3 text-xs text-ink-soft">
           <button
             onClick={onWidenLevels}
-            className="rounded-full border border-line px-3 py-1.5 text-xs font-semibold text-bright transition hover:border-white/25"
+            className="rounded-full border border-rule px-3 py-1.5 text-xs font-semibold text-ink transition hover:border-ink/25"
           >
             Show every level
           </button>
@@ -315,11 +315,11 @@ function EmptyState({
       )}
 
       {status && (
-        <p className="mt-2 text-xs text-muted">The {status} filter is on as well.</p>
+        <p className="mt-2 text-xs text-ink-soft">The {status} filter is on as well.</p>
       )}
 
       {!narrowed && !query && (
-        <p className="mt-1.5 text-xs text-muted">
+        <p className="mt-1.5 text-xs text-ink-soft">
           Open a subject above to have the monitor fetch it.
         </p>
       )}
@@ -375,7 +375,7 @@ function SubjectBrowser({ user }: { user: User }) {
   }
 
   return (
-    <div className="mb-5 rounded-xl border border-line bg-white/3">
+    <div className="mb-5  border border-rule bg-ink/3">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -383,18 +383,18 @@ function SubjectBrowser({ user }: { user: User }) {
       >
         <span className="text-xs font-semibold">
           Subjects
-          <span className="ml-2 font-normal text-muted">
+          <span className="ml-2 font-normal text-ink-soft">
             {unseeded.length === 0
               ? `all ${subjects.length} fetched`
               : `${unseeded.length} of ${subjects.length} not fetched yet`}
           </span>
         </span>
-        <span className="text-xs text-muted">{open ? 'Hide' : 'Browse'}</span>
+        <span className="text-xs text-ink-soft">{open ? 'Hide' : 'Browse'}</span>
       </button>
 
       {open && (
-        <div className="border-t border-line px-4 py-3">
-          <p className="mb-3 text-[11px] leading-relaxed text-muted">
+        <div className="border-t border-rule px-4 py-3">
+          <p className="mb-3 text-[11px] leading-relaxed text-ink-soft">
             A subject is only fetched once somebody opens it. That is what keeps this from
             being hundreds of requests at your registrar for classes nobody is watching.
           </p>
@@ -409,7 +409,7 @@ function SubjectBrowser({ user }: { user: User }) {
                 className={`rounded-full px-3 py-1.5 text-xs font-medium transition disabled:cursor-default ${
                   s.seeded
                     ? 'border border-open/30 bg-open/12 text-open'
-                    : 'border border-line text-muted hover:border-white/25 hover:text-bright'
+                    : 'border border-rule text-ink-soft hover:border-ink/25 hover:text-ink'
                 }`}
               >
                 {s.code}
@@ -469,7 +469,7 @@ function LevelFilter({ user, onUser }: { user: User; onUser: (user: User) => voi
 
   return (
     <div className="mb-5 flex flex-wrap items-center gap-2">
-      <span className="text-xs text-muted">Levels</span>
+      <span className="text-xs text-ink-soft">Levels</span>
 
       {levels.map((l) => {
         const on = user.levels.includes(l.level)
@@ -482,7 +482,7 @@ function LevelFilter({ user, onUser }: { user: User; onUser: (user: User) => voi
             className={`rounded-full px-3 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
               on
                 ? 'border border-open/30 bg-open/12 text-open'
-                : 'border border-line text-muted hover:border-white/25 hover:text-bright'
+                : 'border border-rule text-ink-soft hover:border-ink/25 hover:text-ink'
             }`}
           >
             {/* The registrar's own code, never a word we invented for it. */}
@@ -492,7 +492,7 @@ function LevelFilter({ user, onUser }: { user: User; onUser: (user: User) => voi
         )
       })}
 
-      {user.levels.length === 0 && <span className="text-[11px] text-muted">every level</span>}
+      {user.levels.length === 0 && <span className="text-[11px] text-ink-soft">every level</span>}
 
       {error && <span className="text-[11px] text-full">{error}</span>}
     </div>

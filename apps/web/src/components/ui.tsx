@@ -4,7 +4,7 @@ import { MarkSeat } from './logos'
 export function Logo({ className = '', size = 26 }: { className?: string; size?: number }) {
   return (
     <div className={`flex items-center gap-2.5 ${className}`}>
-      <MarkSeat size={size} className="shrink-0 text-bright" />
+      <MarkSeat size={size} className="shrink-0 text-ink" />
       <span className="text-[17px] font-bold tracking-tight">
         class<span className="text-open">pik</span>
       </span>
@@ -13,9 +13,9 @@ export function Logo({ className = '', size = 26 }: { className?: string; size?:
 }
 
 const statusStyles: Record<Status, string> = {
-  open: 'bg-open/12 text-open border-open/25',
-  full: 'bg-full/10 text-full border-full/25',
-  waitlist: 'bg-wait/10 text-wait border-wait/25',
+  open: 'text-open border-open',
+  full: 'text-full border-full',
+  waitlist: 'text-wait border-wait',
 }
 
 const statusLabel: Record<Status, string> = {
@@ -27,9 +27,9 @@ const statusLabel: Record<Status, string> = {
 export function StatusPill({ status }: { status: Status }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${statusStyles[status]}`}
+      className={`label inline-flex items-center gap-1.5 border px-2 py-1 ${statusStyles[status]}`}
     >
-      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      <span className="h-1.5 w-1.5 bg-current" />
       {statusLabel[status]}
     </span>
   )
@@ -41,7 +41,7 @@ export function SeatBar({ seats, capacity }: { seats: number; capacity: number }
   const pct = Math.min(100, Math.round((taken / capacity) * 100))
   return (
     <div className="flex items-center gap-2.5">
-      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-white/8">
+      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-ink/8">
         <div
           className="h-full rounded-full transition-all duration-700"
           style={{
@@ -50,7 +50,7 @@ export function SeatBar({ seats, capacity }: { seats: number; capacity: number }
           }}
         />
       </div>
-      <span className="num text-xs text-muted">
+      <span className="num text-xs text-ink-soft">
         {taken}/{capacity}
       </span>
     </div>
@@ -59,6 +59,6 @@ export function SeatBar({ seats, capacity }: { seats: number; capacity: number }
 
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-open">{children}</p>
+    <p className="label mb-4 text-open">{children}</p>
   )
 }

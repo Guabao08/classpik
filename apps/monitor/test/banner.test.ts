@@ -375,6 +375,81 @@ describe('BannerAdapter', () => {
     expect(terms[1]!.description).toBe('Spring 2026 (View only)')
   })
 
+  it('does not let one term de-authorise another mid-flight', async () => {
+    // Observed live at Georgia Tech: subject discovery walked the Language
+    // Institute terms while the Fall MATH poll was running, and because Banner
+    // holds the authorised term per cookie, MATH searched a session authorised
+    // for another term. The answer is an empty 200, which the adapter can only
+    // read as "no rows", so MATH failed every single tick.
+    let authorised: string | null = null
+    const termsSeenBySearch: Array<string | null> = []
+
+    const fetchImpl = (async (url: string | URL, init: RequestInit = {}) => {
+      const u = String(url)
+      const headers = new Headers({ 'content-type': 'application/json' })
+
+      if (u.includes('/classSearch/classSearch')) {
+        headers.append('set-cookie', 'JSESSIONID=abc123; Path=/; HttpOnly')
+        return new Response('<html/>', { status: 200, headers })
+      }
+      if (u.includes('/term/search')) {
+        // One authorised term per host, exactly as the registrar behaves.
+        authorised = new URLSearchParams(init.body as string).get('term')
+        return new Response(JSON.stringify({ fwdURL: '/x' }), { status: 200, headers })
+      }
+      if (u.includes('/classSearch/resetDataForm')) {
+        return new Response('true', { status: 200, headers })
+      }
+      if (u.includes('/classSearch/get_subject')) {
+        return new Response(JSON.stringify([{ code: 'CS', description: 'CS' }]), { status: 200, headers })
+      }
+      if (u.includes('/searchResults/searchResults')) {
+        const wanted = new URL(u, 'http://x').searchParams.get('txt_term')
+        termsSeenBySearch.push(authorised)
+        // An unauthorised term is a 200 with nothing in it, never an error.
+        const ok = wanted === authorised
+        return new Response(
+          JSON.stringify({ success: true, totalCount: ok ? 1 : 0, data: ok ? [SECTION_DTO] : [] }),
+          { status: 200, headers }
+        )
+      }
+      return new Response('not found', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const adapter = new BannerAdapter(
+      new PoliteClient({ fetchImpl, minRequestGapMs: 0, sleep: async () => {} })
+    )
+    const school = testSchool()
+
+    // Concurrent, on the same host, on different terms: the live shape.
+    const [sections] = await Promise.all([
+      adapter.fetchSections(school, '202608', 'MATH'),
+      adapter.listSubjects(school, '202623'),
+      adapter.listSubjects(school, '202622'),
+    ])
+
+    expect(sections).toHaveLength(1)
+    // Every search ran against a session authorised for the term it asked for.
+    expect(termsSeenBySearch).toEqual(['202608'])
+  })
+
+  it('re-runs the handshake when the cached session is for another term', async () => {
+    const { adapter, calls } = stubBanner()
+    const school = testSchool()
+
+    await adapter.fetchSections(school, '202608', 'MATH')
+    await adapter.fetchSections(school, '202602', 'MATH')
+    await adapter.fetchSections(school, '202602', 'CS')
+
+    const authorised = calls
+      .filter((c) => c.url.includes('/term/search'))
+      .map((c) => new URLSearchParams(c.body).get('term'))
+
+    // Three reads, two terms: re-authorise on the switch, and only then. The
+    // second 202602 read reuses the session rather than paying for it again.
+    expect(authorised).toEqual(['202608', '202602'])
+  })
+
   it('decodes escaped subject names', async () => {
     // Verbatim from Georgia Tech's get_subject response on 2026-07-31. Stored
     // raw, this both displays wrong and stops "Chemical &" from matching.

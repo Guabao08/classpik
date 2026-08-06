@@ -176,10 +176,10 @@ export default function AppShell({
   const mailEnabled = stats?.accountMail ?? false
 
   return (
-    <div className="flex min-h-screen bg-ink">
+    <div className="flex min-h-screen bg-paper">
       {/* Only on narrow screens, where the sidebar is closed by default and
           there would otherwise be no way to reach the other two views. */}
-      <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-ink/90 px-4 backdrop-blur-xl md:hidden">
+      <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center justify-between border-b border-rule bg-paper/90 px-4 backdrop-blur-xl md:hidden">
         <a href="/app" aria-label="ClassPik home">
           <Logo />
         </a>
@@ -187,7 +187,7 @@ export default function AppShell({
           onClick={() => setMenuOpen(true)}
           aria-label="Open the menu"
           aria-expanded={menuOpen}
-          className="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-muted transition hover:text-bright"
+          className=" border border-rule px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:text-ink"
         >
           Menu
         </button>
@@ -197,7 +197,7 @@ export default function AppShell({
         <button
           aria-label="Close the menu"
           onClick={() => setMenuOpen(false)}
-          className="fixed inset-0 z-40 bg-ink/70 backdrop-blur-sm md:hidden"
+          className="fixed inset-0 z-40 bg-paper/70 backdrop-blur-sm md:hidden"
         />
       )}
 
@@ -206,7 +206,7 @@ export default function AppShell({
           on the `translate` property leaves it stuck at the start value in at
           least one engine, which is a sidebar that never appears. */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-[236px] flex-col overflow-y-auto border-r border-line bg-ink-2 px-4 py-5 md:z-auto md:flex md:bg-ink-2/50 ${
+        className={`fixed inset-y-0 left-0 z-50 w-[236px] flex-col overflow-y-auto border-r border-rule bg-paper-2 px-4 py-5 md:z-auto md:flex md:bg-paper-2/50 ${
           menuOpen ? 'flex' : 'hidden'
         }`}
       >
@@ -220,7 +220,7 @@ export default function AppShell({
           <button
             onClick={() => setMenuOpen(false)}
             aria-label="Close the menu"
-            className="text-xs text-muted transition hover:text-bright md:hidden"
+            className="text-xs text-ink-soft transition hover:text-ink md:hidden"
           >
             Close
           </button>
@@ -238,10 +238,10 @@ export default function AppShell({
                   setView(n.id)
                   setMenuOpen(false)
                 }}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                className={`flex items-center gap-3  px-3 py-2.5 text-sm transition-colors ${
                   active
                     ? 'bg-open/10 font-semibold text-open'
-                    : 'text-muted hover:bg-white/4 hover:text-bright'
+                    : 'text-ink-soft hover:bg-ink/4 hover:text-ink'
                 }`}
               >
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" className="shrink-0">
@@ -249,7 +249,7 @@ export default function AppShell({
                 </svg>
                 {n.label}
                 {badge > 0 && (
-                  <span className="num ml-auto rounded-full bg-white/8 px-1.5 py-0.5 text-[10px] text-muted">
+                  <span className="num ml-auto rounded-full bg-ink/8 px-1.5 py-0.5 text-[10px] text-ink-soft">
                     {badge}
                   </span>
                 )}
@@ -262,8 +262,8 @@ export default function AppShell({
 
         <div className="mt-auto space-y-3 pt-6">
           <div
-            className={`rounded-xl border p-3.5 transition-colors ${
-              view === 'account' ? 'border-open/30 bg-open/8' : 'border-line bg-white/3'
+            className={` border p-3.5 transition-colors ${
+              view === 'account' ? 'border-open/30 bg-open/8' : 'border-rule bg-ink/3'
             }`}
           >
             <p className="truncate text-xs font-semibold" title={user.email}>
@@ -279,31 +279,31 @@ export default function AppShell({
                   setView('account')
                   setMenuOpen(false)
                 }}
-                className={`text-[11px] transition-colors hover:text-bright ${
-                  view === 'account' ? 'font-semibold text-open' : 'text-muted'
+                className={`text-[11px] transition-colors hover:text-ink ${
+                  view === 'account' ? 'font-semibold text-open' : 'text-ink-soft'
                 }`}
               >
                 Account
               </button>
               <button
                 onClick={onSignOut}
-                className="text-[11px] text-muted transition-colors hover:text-bright"
+                className="text-[11px] text-ink-soft transition-colors hover:text-ink"
               >
                 Sign out
               </button>
             </div>
           </div>
 
-          <div className="rounded-xl border border-line bg-white/3 p-3.5">
+          <div className=" border border-rule bg-ink/3 p-3.5">
             <div className="flex items-center gap-2">
               <span
-                className={`h-1.5 w-1.5 rounded-full ${offline ? 'bg-full' : 'bg-open dot-open'}`}
+                className={`h-1.5 w-1.5 rounded-full ${offline ? 'bg-full' : 'bg-open'}`}
               />
               <span className="text-xs font-semibold">
                 {offline ? 'Monitor offline' : 'Monitor online'}
               </span>
             </div>
-            <p className="num mt-1.5 text-[11px] leading-relaxed text-muted">
+            <p className="num mt-1.5 text-[11px] leading-relaxed text-ink-soft">
               {offline
                 ? API_BASE.replace(/^https?:\/\//, '')
                 : stats
@@ -318,9 +318,9 @@ export default function AppShell({
         {offline && (
           <div className="border-b border-full/25 bg-full/8 px-5 py-3.5 md:px-9">
             <p className="text-sm font-semibold">{offline}</p>
-            <p className="mt-1 text-xs leading-relaxed text-muted">
+            <p className="mt-1 text-xs leading-relaxed text-ink-soft">
               Start it with{' '}
-              <code className="num rounded bg-white/8 px-1.5 py-0.5">
+              <code className="num  bg-ink/8 px-1.5 py-0.5">
                 npm run serve -- --demo
               </code>{' '}
               in apps/monitor.
@@ -337,7 +337,7 @@ export default function AppShell({
         )}
 
         {loading ? (
-          <div className="px-5 py-16 text-sm text-muted md:px-9">Loading…</div>
+          <div className="px-5 py-16 text-sm text-ink-soft md:px-9">Loading…</div>
         ) : (
           <>
             {view === 'search' && (

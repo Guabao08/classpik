@@ -137,7 +137,7 @@ const AnimatedList: React.FC<AnimatedListProps> = ({
         ref={listRef}
         className={`overflow-y-auto ${
           displayScrollbar
-            ? '[&::-webkit-scrollbar]:w-[6px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-white/10 [&::-webkit-scrollbar-thumb]:rounded-full'
+            ? '[&::-webkit-scrollbar]:w-[6px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-ink/10 [&::-webkit-scrollbar-thumb]:rounded-full'
             : 'scrollbar-hide'
         }`}
         onScroll={handleScroll}

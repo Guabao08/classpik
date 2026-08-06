@@ -57,19 +57,19 @@ export default function VerifyView({ token }: { token: string | null }) {
       {state === 'working' && (
         <>
           <h1 className="text-lg font-bold tracking-[-0.02em]">Confirming…</h1>
-          <p className="mt-1.5 text-sm leading-relaxed text-muted">One moment.</p>
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">One moment.</p>
         </>
       )}
 
       {state === 'done' && (
         <>
           <h1 className="text-lg font-bold tracking-[-0.02em]">Address confirmed</h1>
-          <p className="mt-1.5 text-sm leading-relaxed text-muted">
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
             ClassPik can now email <span className="num">{message}</span> when a seat opens.
           </p>
           <a
             href="/app"
-            className="mt-5 block rounded-xl bg-open px-4 py-2.5 text-center text-sm font-semibold text-ink transition-opacity hover:opacity-90"
+            className="mt-5 block  bg-ink px-4 py-2.5 text-center text-sm font-medium text-paper transition-opacity hover:opacity-90"
           >
             Go to your watchlist
           </a>
@@ -79,13 +79,13 @@ export default function VerifyView({ token }: { token: string | null }) {
       {state === 'failed' && (
         <>
           <h1 className="text-lg font-bold tracking-[-0.02em]">That link did not work</h1>
-          <p className="mt-1.5 text-sm leading-relaxed text-muted">{message}</p>
-          <p className="mt-4 text-xs leading-relaxed text-muted">
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">{message}</p>
+          <p className="mt-4 text-xs leading-relaxed text-ink-soft">
             Links last a day and work once. Sign in and ask for a new one from your watchlist.
           </p>
           <a
             href="/login"
-            className="mt-5 block rounded-xl border border-line px-4 py-2.5 text-center text-sm font-semibold transition-colors hover:border-white/25"
+            className="mt-5 block  border border-rule px-4 py-2.5 text-center text-sm font-semibold transition-colors hover:border-ink/25"
           >
             Sign in
           </a>

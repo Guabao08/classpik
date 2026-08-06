@@ -50,12 +50,12 @@ export default function SignInView({
   return (
     <AuthCard>
       <h1 className="text-lg font-bold tracking-[-0.02em]">Sign in</h1>
-      <p className="mt-1.5 text-sm leading-relaxed text-muted">
+      <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This is a ClassPik account, not your school login. We never ask for that.
       </p>
 
       {offline && !error && (
-        <p className="mt-4 rounded-xl border border-wait/25 bg-wait/8 px-3.5 py-2.5 text-xs leading-relaxed text-muted">
+        <p className="mt-4  border border-wait/25 bg-wait/8 px-3.5 py-2.5 text-xs leading-relaxed text-ink-soft">
           {offline}. Signing in will not work until it is running.
         </p>
       )}
@@ -87,7 +87,7 @@ export default function SignInView({
         </label>
 
         {error && (
-          <p className="rounded-xl border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
+          <p className=" border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
             {error}
           </p>
         )}
@@ -103,14 +103,14 @@ export default function SignInView({
           screen where somebody discovers they need it. */}
       <a
         href="/forgot"
-        className="mt-4 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-4 block text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         Forgot your password?
       </a>
 
       <a
         href="/signup"
-        className="mt-2 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-2 block text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         No account yet? Create one
       </a>

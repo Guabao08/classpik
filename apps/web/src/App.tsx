@@ -111,19 +111,19 @@ export default function App() {
  */
 function Offline({ message }: { message: string }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink px-6">
-      <div className="panel max-w-md px-6 py-8 text-center">
-        <h1 className="text-lg font-bold tracking-[-0.01em]">Cannot reach the monitor</h1>
-        <p className="mt-2 text-sm text-muted">{message}</p>
-        <p className="mt-4 text-xs leading-relaxed text-muted">
+    <div className="flex min-h-screen items-center justify-center bg-paper px-6">
+      <div className="catalog max-w-md px-6 py-8 text-center">
+        <h1 className="display text-2xl">Cannot reach the monitor</h1>
+        <p className="mt-2 text-sm text-ink-soft">{message}</p>
+        <p className="mt-4 text-xs leading-relaxed text-ink-soft">
           You are still signed in. This is the seat watcher itself being unreachable, not your
           account. Start it with{' '}
-          <code className="num rounded bg-white/8 px-1.5 py-0.5">npm run serve -- --demo</code> in
+          <code className="num bg-paper-2 px-1.5 py-0.5">npm run serve -- --demo</code> in
           apps/monitor.
         </p>
         <button
           onClick={() => window.location.reload()}
-          className="mt-6 rounded-full bg-open px-4 py-2 text-sm font-semibold text-ink transition hover:brightness-110"
+          className="mt-6 bg-ink px-5 py-2.5 text-sm font-medium text-paper transition-opacity hover:opacity-85"
         >
           Try again
         </button>
@@ -152,7 +152,7 @@ function normalize(pathname: string): string {
 
 function Loading() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-muted">
+    <div className="flex min-h-screen items-center justify-center bg-paper text-sm text-ink-soft">
       Loading…
     </div>
   )
@@ -172,7 +172,7 @@ function Redirect({ to }: { to: string }) {
 
 function Landing({ signedIn }: { signedIn: boolean }) {
   return (
-    <div className="min-h-screen bg-ink">
+    <div className="min-h-screen bg-paper">
       <Nav signedIn={signedIn} />
       <Hero />
 
@@ -183,25 +183,25 @@ function Landing({ signedIn }: { signedIn: boolean }) {
           </Reveal>
           <Reveal delay={0.1} className="lg:pl-6 lg:pt-8">
             <SectionLabel>What a watch looks like</SectionLabel>
-            <h2 className="text-[clamp(1.7rem,3.5vw,2.4rem)] font-bold leading-tight tracking-[-0.02em]">
+            <h2 className="display text-[clamp(2rem,4vw,2.9rem)]">
               You ask once. We do the waiting.
             </h2>
-            <p className="mt-5 text-[15px] leading-relaxed text-muted">
+            <p className="mt-5 text-[15px] leading-relaxed text-ink-soft">
               Tell ClassPik which section you need. It checks continuously, for as long as it takes.
               Plenty of classes never open at all, and that is the honest answer. But when one does,
               you know within seconds, whether that is an hour later or six weeks later.
             </p>
-            <p className="mt-4 text-[15px] leading-relaxed text-muted">
+            <p className="mt-4 text-[15px] leading-relaxed text-ink-soft">
               The value is not speed for its own sake. It is that nobody can refresh a page for
               three weeks straight, and you should not have to.
             </p>
-            <dl className="mt-8 grid grid-cols-2 gap-6 border-t border-line pt-7">
+            <dl className="mt-8 grid grid-cols-2 gap-6 border-t border-rule pt-7">
               <div>
-                <dt className="text-xs text-muted">Checks per day</dt>
+                <dt className="text-xs text-ink-soft">Checks per day</dt>
                 <dd className="num mt-1 text-2xl font-semibold">288</dd>
               </div>
               <div>
-                <dt className="text-xs text-muted">You hear back in</dt>
+                <dt className="text-xs text-ink-soft">You hear back in</dt>
                 <dd className="num mt-1 text-2xl font-semibold">&lt;15s</dd>
               </div>
             </dl>

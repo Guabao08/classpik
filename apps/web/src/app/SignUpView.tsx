@@ -83,7 +83,7 @@ function AccountStep({ onCreated }: { onCreated: (user: User) => void }) {
     <AuthCard>
       <StepMark step={1} />
       <h1 className="text-lg font-bold tracking-[-0.02em]">Create an account</h1>
-      <p className="mt-1.5 text-sm leading-relaxed text-muted">
+      <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This is a ClassPik account, not your school login. We never ask for that.
       </p>
 
@@ -115,7 +115,7 @@ function AccountStep({ onCreated }: { onCreated: (user: User) => void }) {
         </label>
 
         {error && (
-          <p className="rounded-xl border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
+          <p className=" border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
             {error}
           </p>
         )}
@@ -127,7 +127,7 @@ function AccountStep({ onCreated }: { onCreated: (user: User) => void }) {
 
       <a
         href="/login"
-        className="mt-4 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-4 block text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         Already have an account? Sign in
       </a>
@@ -182,7 +182,7 @@ function ScopeStep({ onUser, onDone }: { onUser: (user: User) => void; onDone: (
     <AuthCard wide>
       <StepMark step={2} />
       <h1 className="text-lg font-bold tracking-[-0.02em]">Where are you shopping?</h1>
-      <p className="mt-1.5 text-sm leading-relaxed text-muted">
+      <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This sets what Find classes shows you. Your watchlist is never filtered by it, and all of
         it is changeable later from the app.
       </p>
@@ -240,8 +240,8 @@ function ScopeStep({ onUser, onDone }: { onUser: (user: User) => void; onDone: (
                 return (
                   <label
                     key={l.level}
-                    className={`flex cursor-pointer items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-sm transition-colors ${
-                      on ? 'border-open/30 bg-open/10' : 'border-line bg-white/3 hover:border-white/20'
+                    className={`flex cursor-pointer items-center gap-2.5  border px-3.5 py-2.5 text-sm transition-colors ${
+                      on ? 'border-open/30 bg-open/10' : 'border-rule bg-ink/3 hover:border-ink/20'
                     }`}
                   >
                     <input
@@ -257,12 +257,12 @@ function ScopeStep({ onUser, onDone }: { onUser: (user: User) => void; onDone: (
                     />
                     {/* The registrar's own code, never a word we invented for it. */}
                     <span className="font-medium">{l.level}</span>
-                    <span className="num ml-auto text-[11px] text-muted">{l.sections}</span>
+                    <span className="num ml-auto text-[11px] text-ink-soft">{l.sections}</span>
                   </label>
                 )
               })}
             </div>
-            <p className="mt-2 text-[11px] text-muted">
+            <p className="mt-2 text-[11px] text-ink-soft">
               {levels.length === 0
                 ? 'Nothing ticked means every level, including sections your school does not label.'
                 : 'Tick as many as you take classes at.'}
@@ -271,7 +271,7 @@ function ScopeStep({ onUser, onDone }: { onUser: (user: User) => void; onDone: (
         )}
 
         {error && (
-          <p className="rounded-xl border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
+          <p className=" border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
             {error}
           </p>
         )}
@@ -284,7 +284,7 @@ function ScopeStep({ onUser, onDone }: { onUser: (user: User) => void; onDone: (
       <button
         type="button"
         onClick={onDone}
-        className="mt-4 w-full text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-4 w-full text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         Skip for now
       </button>
@@ -298,10 +298,10 @@ function StepMark({ step }: { step: 1 | 2 }) {
       {[1, 2].map((n) => (
         <span
           key={n}
-          className={`h-1 w-7 rounded-full transition-colors ${n <= step ? 'bg-open' : 'bg-white/10'}`}
+          className={`h-1 w-7 rounded-full transition-colors ${n <= step ? 'bg-open' : 'bg-ink/10'}`}
         />
       ))}
-      <span className="num ml-1 text-[11px] text-muted">step {step} of 2</span>
+      <span className="num ml-1 text-[11px] text-ink-soft">step {step} of 2</span>
     </div>
   )
 }

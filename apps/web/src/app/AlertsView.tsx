@@ -3,9 +3,9 @@ import type { EventItem } from '../lib/api'
 const LABELS: Record<string, { label: string; cls: string; dot: string }> = {
   seat_opened: { label: 'Seat opened', cls: 'bg-open/12 text-open border-open/25', dot: 'bg-open' },
   waitlist_opened: { label: 'Waitlist opened', cls: 'bg-wait/10 text-wait border-wait/25', dot: 'bg-wait' },
-  seat_closed: { label: 'Filled', cls: 'border-line text-muted', dot: 'bg-white/25' },
-  waitlist_closed: { label: 'Waitlist full', cls: 'border-line text-muted', dot: 'bg-white/25' },
-  capacity_changed: { label: 'Capacity changed', cls: 'border-line text-muted', dot: 'bg-white/25' },
+  seat_closed: { label: 'Filled', cls: 'border-rule text-ink-soft', dot: 'bg-ink/25' },
+  waitlist_closed: { label: 'Waitlist full', cls: 'border-rule text-ink-soft', dot: 'bg-ink/25' },
+  capacity_changed: { label: 'Capacity changed', cls: 'border-rule text-ink-soft', dot: 'bg-ink/25' },
   section_removed: { label: 'Section gone', cls: 'bg-full/10 text-full border-full/25', dot: 'bg-full' },
 }
 
@@ -22,7 +22,7 @@ export default function AlertsView({ events }: { events: EventItem[] }) {
     <div className="px-5 py-6 md:px-9 md:py-8">
       <header className="mb-7">
         <h1 className="text-2xl font-bold tracking-[-0.02em]">Alerts</h1>
-        <p className="mt-1.5 text-sm text-muted">
+        <p className="mt-1.5 text-sm text-ink-soft">
           Every change on a section you watch, and what we did about it.
         </p>
       </header>
@@ -30,7 +30,7 @@ export default function AlertsView({ events }: { events: EventItem[] }) {
       {events.length === 0 ? (
         <div className="panel px-6 py-20 text-center">
           <p className="text-sm font-medium">Nothing has happened yet.</p>
-          <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted">
+          <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-ink-soft">
             That is the normal state. Most sections sit unchanged for weeks, which is exactly why
             watching them by hand does not work.
           </p>
@@ -40,28 +40,28 @@ export default function AlertsView({ events }: { events: EventItem[] }) {
           {events.map((e) => {
             const meta = LABELS[e.kind] ?? {
               label: e.kind.replace(/_/g, ' '),
-              cls: 'border-line text-muted',
-              dot: 'bg-white/25',
+              cls: 'border-rule text-ink-soft',
+              dot: 'bg-ink/25',
             }
             return (
               <div
                 key={e.id}
-                className="flex items-center justify-between gap-5 border-b border-line px-5 py-4 transition-colors last:border-0 hover:bg-white/2"
+                className="flex items-center justify-between gap-5 border-b border-rule px-5 py-4 transition-colors last:border-0 hover:bg-ink/2"
               >
                 <div className="flex min-w-0 items-center gap-3.5">
                   <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />
                   <div className="min-w-0">
                     <div className="text-sm font-semibold">
-                      {e.code} <span className="text-muted">· {e.section_label}</span>
+                      {e.code} <span className="text-ink-soft">· {e.section_label}</span>
                     </div>
-                    <div className="mt-0.5 truncate text-xs text-muted">
+                    <div className="mt-0.5 truncate text-xs text-ink-soft">
                       {e.title} · {e.detail}
                     </div>
                   </div>
                 </div>
 
                 <div className="flex shrink-0 items-center gap-3">
-                  <span className="num text-xs text-muted">{ago(e.at)}</span>
+                  <span className="num text-xs text-ink-soft">{ago(e.at)}</span>
                   <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${meta.cls}`}>
                     {meta.label}
                   </span>

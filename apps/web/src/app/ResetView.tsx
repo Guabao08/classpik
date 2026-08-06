@@ -43,7 +43,7 @@ export default function ResetView({ token }: { token: string }) {
     return (
       <AuthCard>
         <h1 className="text-lg font-bold tracking-[-0.02em]">Password changed</h1>
-        <p className="mt-1.5 text-sm leading-relaxed text-muted">
+        <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
           Every device that was signed in has been signed out, including any you did not know
           about. Your watches are untouched and still running.
         </p>
@@ -51,7 +51,7 @@ export default function ResetView({ token }: { token: string }) {
             in with the password just chosen is the step that proves it took. */}
         <a
           href="/login"
-          className="mt-5 block rounded-xl bg-open px-4 py-2.5 text-center text-sm font-semibold text-ink transition-opacity hover:opacity-90"
+          className="mt-5 block  bg-ink px-4 py-2.5 text-center text-sm font-medium text-paper transition-opacity hover:opacity-90"
         >
           Sign in
         </a>
@@ -62,7 +62,7 @@ export default function ResetView({ token }: { token: string }) {
   return (
     <AuthCard>
       <h1 className="text-lg font-bold tracking-[-0.02em]">Choose a new password</h1>
-      <p className="mt-1.5 text-sm leading-relaxed text-muted">
+      <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
         This signs out every device currently using the old one.
       </p>
 
@@ -80,7 +80,7 @@ export default function ResetView({ token }: { token: string }) {
         </label>
 
         {error && (
-          <p className="rounded-xl border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
+          <p className=" border border-full/25 bg-full/8 px-3.5 py-2.5 text-sm text-full">
             {error}
           </p>
         )}
@@ -94,7 +94,7 @@ export default function ResetView({ token }: { token: string }) {
           needs a way forward that is not the browser Back button. */}
       <a
         href="/forgot"
-        className="mt-4 block text-center text-xs text-muted transition-colors hover:text-bright"
+        className="mt-4 block text-center text-xs text-ink-soft transition-colors hover:text-ink"
       >
         Link expired? Ask for another
       </a>

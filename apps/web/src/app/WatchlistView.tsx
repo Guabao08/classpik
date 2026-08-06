@@ -46,7 +46,7 @@ export default function WatchlistView({
       <header className="mb-7 flex flex-col items-start justify-between gap-4 sm:flex-row sm:gap-6">
         <div>
           <h1 className="text-2xl font-bold tracking-[-0.02em]">Watchlist</h1>
-          <p className="mt-1.5 text-sm text-muted">
+          <p className="mt-1.5 text-sm text-ink-soft">
             {watches.length} section{watches.length === 1 ? '' : 's'} watched, {autoCount} set to
             auto-claim.
             {strayCount > 0 &&
@@ -54,9 +54,9 @@ export default function WatchlistView({
           </p>
         </div>
         {autoCount > 0 && (
-          <div className="rounded-xl border border-open/25 bg-open/8 px-4 py-3">
+          <div className=" border border-open/25 bg-open/8 px-4 py-3">
             <div className="text-xs font-semibold text-open">Auto-claim requested</div>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted">
+            <p className="mt-1 text-[11px] leading-relaxed text-ink-soft">
               Needs the local agent, which is not built yet.
             </p>
           </div>
@@ -66,7 +66,7 @@ export default function WatchlistView({
       {watches.length === 0 ? (
         <div className="panel px-6 py-20 text-center">
           <p className="text-sm font-medium">Nothing watched yet.</p>
-          <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted">
+          <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-ink-soft">
             Head to Find classes and hit Watch on any section. The monitor starts checking it on its
             next cycle.
             {emailReady
@@ -79,7 +79,7 @@ export default function WatchlistView({
           {/* Hidden below the breakpoint, where each row becomes a labelled
               card. Six columns in a phone's width is unreadable, and a phone is
               where a seat alert is read. */}
-          <div className={`hidden border-b border-line px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted ${COLUMNS}`}>
+          <div className={`hidden border-b border-rule px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-ink-soft ${COLUMNS}`}>
             <span>Course</span>
             <span>Seats</span>
             <span>Status</span>
@@ -93,23 +93,23 @@ export default function WatchlistView({
             return (
               <div
                 key={w.id}
-                className={`flex flex-col gap-2.5 border-b border-line px-5 py-3.5 transition-colors last:border-0 hover:bg-white/2 md:items-center ${COLUMNS}`}
+                className={`flex flex-col gap-2.5 border-b border-rule px-5 py-3.5 transition-colors last:border-0 hover:bg-ink/2 md:items-center ${COLUMNS}`}
               >
                 <div className="min-w-0">
                   <div className="flex items-baseline gap-2">
                     <span className="text-sm font-semibold">
-                      {s.code} <span className="text-muted">· {s.section}</span>
+                      {s.code} <span className="text-ink-soft">· {s.section}</span>
                     </span>
-                    <span className="num text-[11px] text-muted">{s.crn}</span>
+                    <span className="num text-[11px] text-ink-soft">{s.crn}</span>
                   </div>
-                  <div className="mt-0.5 truncate text-xs text-muted">
+                  <div className="mt-0.5 truncate text-xs text-ink-soft">
                     {s.title}
                     {s.meetingDays ? ` · ${s.meetingDays} ${s.meetingTime ?? ''}` : ''}
                   </div>
                   {/* Named, not hidden. A watch from the school you left is
                       still a watch, and it keeps being checked. */}
                   {elsewhere(s.schoolId) && (
-                    <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-line bg-white/4 px-2 py-0.5 text-[10px] text-muted">
+                    <span className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-rule bg-ink/4 px-2 py-0.5 text-[10px] text-ink-soft">
                       <span className="h-1 w-1 rounded-full bg-wait" />
                       {nameOf(s.schoolId)}
                     </span>
@@ -127,17 +127,17 @@ export default function WatchlistView({
                   <StatusPill status={s.status} />
                 </div>
 
-                <div className="flex gap-1 rounded-lg border border-line bg-white/3 p-1">
+                <div className="flex gap-1  border border-rule bg-ink/3 p-1">
                   {(['notify', 'claim'] as const).map((m) => (
                     <button
                       key={m}
                       onClick={() => onSetMode(s.id, m)}
-                      className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                      className={`flex-1  px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
                         w.mode === m
                           ? m === 'claim'
                             ? 'bg-open/15 text-open'
-                            : 'bg-white/10 text-bright'
-                          : 'text-muted hover:text-bright'
+                            : 'bg-ink/10 text-ink'
+                          : 'text-ink-soft hover:text-ink'
                       }`}
                     >
                       {m === 'notify' ? 'Notify me' : 'Claim it'}
@@ -145,7 +145,7 @@ export default function WatchlistView({
                   ))}
                 </div>
 
-                <div className="flex gap-1 rounded-lg border border-line bg-white/3 p-1">
+                <div className="flex gap-1  border border-rule bg-ink/3 p-1">
                   {(['console', 'email'] as const).map((c) => {
                     const disabled = c === 'email' && !emailReady
                     return (
@@ -160,8 +160,8 @@ export default function WatchlistView({
                               ? `Sent to ${email}, the address on your account`
                               : 'Shown in Alerts'
                         }
-                        className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                          w.channel === c ? 'bg-white/10 text-bright' : 'text-muted hover:text-bright'
+                        className={`flex-1  px-2.5 py-1.5 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          w.channel === c ? 'bg-ink/10 text-ink' : 'text-ink-soft hover:text-ink'
                         }`}
                       >
                         {c === 'console' ? 'In app' : 'Email'}
@@ -173,7 +173,7 @@ export default function WatchlistView({
                 <button
                   onClick={() => onToggle(s.id)}
                   aria-label={`Stop watching ${s.code}`}
-                  className="self-start rounded-lg px-2 py-1.5 text-xs text-muted transition-colors hover:text-full md:self-auto"
+                  className="self-start  px-2 py-1.5 text-xs text-ink-soft transition-colors hover:text-full md:self-auto"
                 >
                   Remove
                 </button>

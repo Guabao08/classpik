@@ -1,7 +1,14 @@
-import SpotlightCard from '../bits/SpotlightCard'
 import Reveal from '../components/Reveal'
 import { SectionLabel } from '../components/ui'
 
+/**
+ * Three steps, set as numbered columns divided by rules.
+ *
+ * These were spotlight cards that lit up under the cursor. The effect drew the
+ * eye to whichever step the mouse happened to be near, which is not the order
+ * they should be read in, and it made three sequential steps look like three
+ * interchangeable features.
+ */
 const steps = [
   {
     n: '01',
@@ -23,24 +30,23 @@ const steps = [
 export default function HowItWorks() {
   return (
     <section id="how" className="mx-auto max-w-6xl px-6 py-24">
-      <Reveal className="mb-12 max-w-2xl">
+      <Reveal className="mb-14 max-w-2xl">
         <SectionLabel>How it works</SectionLabel>
-        <h2 className="text-[clamp(1.9rem,4vw,2.75rem)] font-bold leading-tight tracking-[-0.02em]">
+        <h2 className="display text-[clamp(2.1rem,4.5vw,3.2rem)]">
           Two jobs. One of them runs while you sleep.
         </h2>
       </Reveal>
 
-      <div className="grid gap-5 md:grid-cols-3">
+      <div className="grid border-t border-ink md:grid-cols-3">
         {steps.map((s, i) => (
-          <Reveal key={s.n} delay={i * 0.09}>
-            <SpotlightCard
-              className="!border-line !bg-white/3 !rounded-2xl h-full p-7"
-              spotlightColor="rgba(200, 255, 77, 0.12)"
-            >
-              <div className="num mb-5 text-xs font-semibold text-open">{s.n}</div>
-              <h3 className="mb-2.5 text-lg font-semibold leading-snug">{s.title}</h3>
-              <p className="text-sm leading-relaxed text-muted">{s.body}</p>
-            </SpotlightCard>
+          <Reveal
+            key={s.n}
+            delay={i * 0.09}
+            className="border-b border-rule px-0 py-8 md:border-b-0 md:border-l md:px-7 md:first:border-l-0 md:first:pl-0"
+          >
+            <div className="num mb-6 text-xs font-medium text-open">{s.n}</div>
+            <h3 className="mb-3 text-[17px] font-medium leading-snug">{s.title}</h3>
+            <p className="text-[14px] leading-[1.65] text-ink-soft">{s.body}</p>
           </Reveal>
         ))}
       </div>

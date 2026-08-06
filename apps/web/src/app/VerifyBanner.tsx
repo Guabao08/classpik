@@ -66,7 +66,7 @@ export default function VerifyBanner({
   return (
     <div className="border-b border-wait/25 bg-wait/8 px-5 py-3.5 md:px-9">
       <p className="text-sm font-semibold">Confirm {email} to get alerts by email</p>
-      <p className="mt-1 text-xs leading-relaxed text-muted">
+      <p className="mt-1 text-xs leading-relaxed text-ink-soft">
         {state === 'sent'
           ? detail || 'Sent. Open the link in that inbox; it lasts a day.'
           : state === 'throttled' || state === 'failed'
@@ -80,7 +80,7 @@ export default function VerifyBanner({
         <button
           onClick={() => void resend()}
           disabled={state === 'sending'}
-          className="mt-2.5 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition-colors hover:border-white/25 disabled:opacity-50"
+          className="mt-2.5  border border-rule px-3 py-1.5 text-xs font-semibold transition-colors hover:border-ink/25 disabled:opacity-50"
         >
           {state === 'sending' ? 'Sending…' : 'Send the link again'}
         </button>
