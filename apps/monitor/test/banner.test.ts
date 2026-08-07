@@ -358,14 +358,19 @@ describe('BannerAdapter', () => {
   })
 
   it('stops paging when a page comes back empty', async () => {
+    // This exists so an empty page cannot spin the pager forever, and it still
+    // does. What changed is the verdict: it used to assert that the short list
+    // was returned, which is the behaviour that made 1268 live sections vanish
+    // from search. Terminating by refusing is still terminating.
     const { adapter } = stubBanner({
       searchOverride: (_url, p) =>
         p === 0
           ? { success: true, totalCount: 9999, data: [SECTION_DTO] }
           : { success: true, totalCount: 9999, data: [] },
     })
-    const out = await adapter.fetchSections(testSchool(), '202608', 'MATH')
-    expect(out).toHaveLength(1)
+    await expect(adapter.fetchSections(testSchool(), '202608', 'MATH')).rejects.toThrow(
+      /truncated read/
+    )
   })
 
   it('lists terms and strips the markup Banner puts in descriptions', async () => {
@@ -373,6 +378,76 @@ describe('BannerAdapter', () => {
     const terms = await adapter.listTerms(testSchool())
     expect(terms[0]).toEqual({ code: '202608', description: 'Fall 2026' })
     expect(terms[1]!.description).toBe('Spring 2026 (View only)')
+  })
+
+  it('refuses a truncated read instead of returning a short list', async () => {
+    /*
+     * Observed live at Georgia Tech: a session that lapsed between page one and
+     * page two returned 500 of 1751 CS sections. The loop broke on the empty
+     * page and handed back what it had, the caller could not tell a short list
+     * from a complete one, and 1268 sections were marked absent and vanished
+     * from search. A short read has to be an error, not a result.
+     */
+    const row = (crn: string) => ({ ...SECTION_DTO, courseReferenceNumber: crn })
+    const { adapter } = stubBanner({
+      searchOverride: (_url, page) =>
+        page === 0
+          ? { success: true, totalCount: 3, data: [row('1'), row('2')] }
+          : { success: true, totalCount: 3, data: [] },
+    })
+
+    await expect(adapter.fetchSections(testSchool(), '202608', 'CS')).rejects.toThrow(
+      /truncated read for CS in 202608: got 2 of 3/
+    )
+  })
+
+  it('re-handshakes after a truncated read rather than reusing the bad session', async () => {
+    const row = (crn: string) => ({ ...SECTION_DTO, courseReferenceNumber: crn })
+    const { adapter, calls } = stubBanner({
+      searchOverride: (_url, page) =>
+        page === 0
+          ? { success: true, totalCount: 3, data: [row('1'), row('2')] }
+          : { success: true, totalCount: 3, data: [] },
+    })
+    const school = testSchool()
+
+    await adapter.fetchSections(school, '202608', 'CS').catch(() => {})
+    await adapter.fetchSections(school, '202608', 'CS').catch(() => {})
+
+    // Two attempts, two handshakes. The session that produced the short read is
+    // the thing that was wrong, so keeping it cached would repeat the failure
+    // for the whole session TTL.
+    const handshakes = calls.filter((c) => c.url.includes('/term/search')).length
+    expect(handshakes).toBe(2)
+  })
+
+  it('still reads a complete multi-page result', async () => {
+    const row = (crn: string) => ({ ...SECTION_DTO, courseReferenceNumber: crn })
+    const { adapter } = stubBanner({
+      searchOverride: (_url, page) =>
+        page === 0
+          ? { success: true, totalCount: 3, data: [row('1'), row('2')] }
+          : { success: true, totalCount: 3, data: [row('3')] },
+    })
+
+    const sections = await adapter.fetchSections(testSchool(), '202608', 'CS')
+    expect(sections.map((s) => s.crn)).toEqual(['1', '2', '3'])
+  })
+
+  it('follows a catalog that shrinks between pages rather than failing on it', async () => {
+    // totalCount is re-read every page on purpose. A registrar that removes a
+    // section mid-read is not a truncated response, and treating it as one
+    // would retry forever against a catalog that is simply changing.
+    const row = (crn: string) => ({ ...SECTION_DTO, courseReferenceNumber: crn })
+    const { adapter } = stubBanner({
+      searchOverride: (_url, page) =>
+        page === 0
+          ? { success: true, totalCount: 4, data: [row('1'), row('2')] }
+          : { success: true, totalCount: 2, data: [] },
+    })
+
+    const sections = await adapter.fetchSections(testSchool(), '202608', 'CS')
+    expect(sections.map((s) => s.crn)).toEqual(['1', '2'])
   })
 
   it('does not let one term de-authorise another mid-flight', async () => {

@@ -161,6 +161,9 @@ export class BannerAdapter implements SisAdapter {
   ): Promise<RawSection[]> {
     const out: RawSection[] = []
     let offset = 0
+    // What the registrar said it was going to give us, re-read every page so a
+    // catalog that legitimately changes mid-read moves the target with it.
+    let expected = 0
 
     for (;;) {
       // Banner keeps the previous search in session state; without this reset
@@ -199,8 +202,36 @@ export class BannerAdapter implements SisAdapter {
 
       for (const row of rows) out.push(toRawSection(row))
 
+      expected = body.totalCount
       offset += rows.length
-      if (rows.length === 0 || offset >= body.totalCount) break
+      if (offset >= expected) break
+
+      /*
+       * A page that comes back empty before we have read everything the
+       * registrar promised is a truncated read, and it must not be returned as
+       * a result.
+       *
+       * This used to `break` and hand back what it had. The caller has no way
+       * to tell a short list from a complete one, so it did the only thing it
+       * could and concluded that every section it did not see had vanished.
+       * Observed at Georgia Tech on 2026-08-07: a session that lapsed between
+       * page one and page two returned 500 of 1751 CS sections, and 1268
+       * sections were marked absent. Absent sections are excluded from search,
+       * so most of the CS catalog disappeared for a student until the next
+       * good poll put it back.
+       *
+       * Transient, and the session goes with it: the next attempt starts from a
+       * fresh handshake, which is the thing that was wrong.
+       */
+      if (rows.length === 0) {
+        this.sessions.delete(this.host(school))
+        throw new SisError(
+          `truncated read for ${subject} in ${term}: got ${out.length} of ${expected} sections`,
+          null,
+          true
+        )
+      }
+
       if (out.length > 20_000) {
         throw new SisError(`refusing to page past 20000 sections for ${subject}`, null, false)
       }
